@@ -1,0 +1,42 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+compile_commands.json
+
+# VS Code
+.vscode/
+
+# Linux
+.DS_Store
+Thumbs.db
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+*.map
+
+# Logs and temporary files
+*.log
+*.tmp
+serial_*.txt
+
+# Secrets and environment files
+.env
+.env.*
+*.pem
+*.key
+secrets.ini

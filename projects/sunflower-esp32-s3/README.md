@@ -23,7 +23,7 @@ No other GPIOs are currently in use by this firmware.
 ## Build instructions
 
 ```
-cd ~/DOBETTERCODE/MICROCONTROLLERS/projects/sunflower-esp32-s3
+cd ~/DOBETTERCODE/DBCODE/projects/sunflower-esp32-s3
 export PATH="$HOME/.platformio/penv/bin:$PATH"   # if pio isn't already on PATH
 pio run
 ```

@@ -1,14 +1,16 @@
-# MICROCONTROLLERS
+# DBCODE
 
 Part of the **DOBETTERCODE** development workspace. `DOBETTERCODE` is the parent
-workspace directory for ongoing development work; `MICROCONTROLLERS` is the
-Git repository within it dedicated to embedded/microcontroller projects —
-ESP32, ESP8266, Arduino, Raspberry Pi Pico, and similar boards.
+workspace directory for ongoing development work; `DBCODE` is the Git
+repository within it for general software, firmware, and embedded
+development — ESP32, ESP8266, Raspberry Pi Pico, Arduino, Raspberry Pi,
+Python utilities, desktop software, CLI tools, shared libraries,
+experimental projects, and future robotics firmware.
 
 ## Repository layout
 
 ```
-MICROCONTROLLERS/
+DBCODE/
 ├── README.md
 ├── .gitignore
 ├── docs/                     Cross-project documentation and test plans

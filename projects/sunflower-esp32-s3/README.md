@@ -1,7 +1,7 @@
 # sunflower-esp32-s3
 
 ESP32-S3 firmware project driving a 58-pixel WS2812B-compatible addressable
-LED strip.
+LED strip, controlled by four physical pushbuttons.
 
 ## Hardware
 
@@ -9,16 +9,25 @@ LED strip.
 - **Board:** generic ESP32-S3 devkit, USB-C, UART0 bridged to USB via an
   onboard WCH CH343 chip (not the ESP32-S3's native USB-OTG peripheral)
 - **LEDs:** 58x WS2812B-compatible addressable LEDs, single data line
+- **Buttons:** 4x momentary pushbuttons, each wired between its GPIO pin
+  and GND, using the ESP32's internal pull-up (no external resistors)
 - **Power:** ESP32 5V pin and LED strip 5V share a common ground with the
   ESP32 GND pin
 
 ## GPIO assignments
 
-| Signal        | GPIO | Notes                                   |
-|---------------|------|------------------------------------------|
-| LED data (DIN)| 4    | 3.3V logic-level data signal to LED strip|
+| Signal | GPIO | Notes |
+|---|---|---|
+| LED data (DIN) | 4 | 3.3V logic-level data signal to LED strip |
+| Mode button | 10 | `INPUT_PULLUP`, wired to GND — cycles LED mode |
+| Mute button | 11 | `INPUT_PULLUP`, wired to GND — toggles LEDs off/on |
+| Brightness button | 17 | `INPUT_PULLUP`, wired to GND — cycles brightness |
+| Button 4 (print-only) | 5 | `INPUT_PULLUP`, wired to GND — logs press only |
 
-No other GPIOs are currently in use by this firmware.
+GPIO45 was tried as a candidate spare pin during wiring diagnostics and
+failed to respond even to a direct short to GND (likely not broken out to a
+usable header pin on this board, or a bad physical connection) — it is not
+used by this firmware.
 
 ## Build instructions
 
@@ -52,23 +61,37 @@ pio device monitor -p /dev/ttyACM0 -b 115200
 
 (Ctrl+C to exit.)
 
-## Current LED test behavior
+## Current LED controller behavior
 
-On boot, the firmware runs through the following stages once, printing each
-stage name to Serial as `[STAGE] ...`, then loops the final stage forever:
+On boot the firmware initializes all four buttons and the LED strip, and
+starts in **Mode 0 (Off)**. Each button is independently debounced (40ms,
+edge-triggered on stable HIGH→LOW) so presses on different buttons never
+interfere with each other, and each press is a single mode/setting change
+with no repeat-while-held.
 
-1. Clear all 58 LEDs
-2. LED 0 solid red for 1 second
-3. LED 57 solid green for 1 second
-4. Dim white pixel chase from LED 0 through LED 57
-5. Red fill from LED 0 through LED 57
-6. Green fill backward from LED 57 through LED 0
-7. Dim solid blue for 2 seconds
-8. Slow rainbow animation — runs forever
+**Mode button (GPIO10)** — advances to the next mode on each press,
+wrapping from the last mode back to the first. 12 modes:
 
-Global brightness is capped at 15/255 in firmware (`BRIGHTNESS` constant in
-`src/main.cpp`), so no stage — including the "white" stages — ever drives the
-LEDs at full brightness.
+`Off, Solid Red, Solid Green, Solid Blue, Solid White (dim), Forward
+Walking Pixel, Reverse Walking Pixel, Rainbow, Theater Chase, Breathing,
+Twinkle, Larson Scanner`
+
+Animated modes run on their own `millis()`-based timing in the main loop
+(no `delay()`), so buttons stay responsive while an animation is running.
+
+**Mute button (GPIO11)** — toggles the LEDs off/on without losing the
+currently selected mode; unmuting re-renders exactly where the mode was
+left off.
+
+**Brightness button (GPIO17)** — cycles global brightness through
+`10 → 15 → 20 → 10 ...`. Never reaches full brightness at any level,
+including in "white" modes.
+
+**Button 4 (GPIO5)** — currently print-only; logs `[BUTTON] Button 4
+pressed` to Serial with no other effect. Reserved for future use.
+
+All brightness levels stay well below full brightness (255) — even the
+brightest setting (20/255) keeps LED output conservative.
 
 ## Safety warnings
 

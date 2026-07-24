@@ -8,8 +8,10 @@
 #define BUTTON_BRIGHTNESS_PIN 17
 #define BUTTON4_PIN 5
 #define NUM_LEDS 58
-#define NUM_MODES 12
+#define NUM_MODES 13
+#define MODE_AUDIO_PULSE 12 // last mode, appended so existing mode numbers 0-11 are unchanged
 #define DEBOUNCE_DELAY_MS 40
+#define BUTTON4_LONG_PRESS_MS 600 // hold this long to toggle AUDIO_PULSE
 
 // --- INMP441 I2S microphone config ---
 #define I2S_PORT I2S_NUM_0
@@ -24,6 +26,19 @@
 #define MIC_ZERO_BYTE_WARN_THRESHOLD 50  // consecutive empty i2s_read() calls
 #define MIC_STUCK_WARN_MS 3000           // how long "stuck" must persist before warning
 #define MIC_SATURATION_THRESHOLD 8300000 // near max of the 24-bit signed sample range
+
+// --- AUDIO_PULSE tuning ---
+// Values chosen from hardware-observed RMS ranges on this exact mic/board:
+// quiet ~8k-20k, taps ~19k-23k, speech ~40k-360k+, claps ~100k-900k+ (often
+// 500k+ for a sharp clap specifically).
+#define AUDIO_NOISE_FLOOR 20000.0f   // top of the observed quiet-room range; below this, level is 0
+#define AUDIO_MAX_RMS 200000.0f      // normalization ceiling; loud speech/music reaches ~1.0 here
+#define AUDIO_CLAP_THRESHOLD 400000.0f // above loud speech (~360k), below typical clap RMS (~500k+)
+#define AUDIO_ATTACK_SMOOTHING 0.6f  // fast rise: speech/claps register almost immediately
+#define AUDIO_RELEASE_SMOOTHING 0.08f // slow fall: avoids visible flicker between samples
+#define AUDIO_CLAP_DECAY 0.85f       // per-frame decay of the clap flash (~150-200ms to fade)
+#define AUDIO_IDLE_BRIGHTNESS 0.15f  // fraction of full color used for the silent idle glow
+#define AUDIO_EDGE_SOFTNESS 0.15f    // normalized-distance falloff width of the expanding pulse edge
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -40,6 +55,7 @@ const char *MODE_NAMES[NUM_MODES] = {
     "Breathing",
     "Twinkle",
     "Larson Scanner",
+    "AUDIO_PULSE",
 };
 
 uint8_t currentMode = 0;
@@ -72,6 +88,13 @@ DebouncedButton muteButton{BUTTON_MUTE_PIN};
 DebouncedButton brightnessButton{BUTTON_BRIGHTNESS_PIN};
 DebouncedButton button4{BUTTON4_PIN};
 
+// Button 4 long-press tracking: short press cycles audio-reactive modes
+// (currently just AUDIO_PULSE -- a no-op until more exist); long press
+// (>= BUTTON4_LONG_PRESS_MS) toggles AUDIO_PULSE on/off directly.
+unsigned long button4PressStartTime = 0;
+bool button4LongPressFired = false;
+uint8_t modeBeforeAudioPulse = 0; // restored when long-press exits AUDIO_PULSE
+
 // Returns true exactly once per debounced press (stable HIGH->LOW edge).
 bool buttonPressedEdge(DebouncedButton &b) {
   int reading = digitalRead(b.pin);
@@ -96,8 +119,18 @@ bool buttonPressedEdge(DebouncedButton &b) {
 
 // --- INMP441 microphone diagnostic state ---
 bool micReady = false;
-bool micDiagnosticEnabled = false;
+// Button 4 no longer toggles this (it now controls AUDIO_PULSE) -- default
+// to on so the [MIC] diagnostic output isn't lost, just no longer gated by
+// a button. toggleMicDiagnostic() is kept available for future rewiring.
+bool micDiagnosticEnabled = true;
 const char *MIC_CHANNEL_NAME = "LEFT"; // kept in sync with channel_format below
+
+// Latest completed window's DC-corrected RMS, in raw sample units. Updated
+// every ~MIC_PRINT_INTERVAL_MS by updateMicDiagnostic() regardless of
+// whether diagnostic printing is enabled -- AUDIO_PULSE (and any future
+// audio-reactive mode) reads this directly, reusing the one existing I2S
+// capture path instead of a second driver/init.
+float micLatestRms = 0.0f;
 
 // Per-window accumulators (reset every MIC_PRINT_INTERVAL_MS)
 uint32_t micBytesThisWindow = 0;
@@ -219,8 +252,12 @@ void toggleMicDiagnostic() {
   }
 }
 
+// Always runs the I2S capture/accumulation (so micLatestRms stays fresh for
+// audio-reactive modes even when diagnostic printing is off); only the
+// Serial output below is gated by micDiagnosticEnabled, preserving Button
+// 4's existing observable toggle behavior exactly.
 void updateMicDiagnostic() {
-  if (!micDiagnosticEnabled) return;
+  if (!micReady) return;
 
   int32_t sampleBuf[128];
   size_t bytesRead = 0;
@@ -272,7 +309,7 @@ void updateMicDiagnostic() {
     }
   } else {
     micZeroByteStreak++;
-    if (micZeroByteStreak > MIC_ZERO_BYTE_WARN_THRESHOLD && !micZeroByteWarned) {
+    if (micDiagnosticEnabled && micZeroByteStreak > MIC_ZERO_BYTE_WARN_THRESHOLD && !micZeroByteWarned) {
       Serial.println(F("[MIC] WARN: I2S reads returning 0 bytes repeatedly - check wiring/init"));
       micZeroByteWarned = true;
     }
@@ -286,25 +323,28 @@ void updateMicDiagnostic() {
     if (micSampleCount > 0) {
       double meanSquare = (double)micSumSquaresCorrected / (double)micSampleCount;
       long rms = (long)sqrt(meanSquare);
-      Serial.printf("[MIC] bytes=%lu rawMin=%ld rawMax=%ld peak=%ld rms=%ld\n",
-                    (unsigned long)micBytesThisWindow, (long)micRawMin, (long)micRawMax,
-                    (long)micPeakCorrected, rms);
-    } else {
+      micLatestRms = (float)rms; // always updated, regardless of diagnostic print state
+      if (micDiagnosticEnabled) {
+        Serial.printf("[MIC] bytes=%lu rawMin=%ld rawMax=%ld peak=%ld rms=%ld\n",
+                      (unsigned long)micBytesThisWindow, (long)micRawMin, (long)micRawMax,
+                      (long)micPeakCorrected, rms);
+      }
+    } else if (micDiagnosticEnabled) {
       Serial.printf("[MIC] bytes=%lu (no samples this window)\n", (unsigned long)micBytesThisWindow);
     }
 
-    if (now - micLastNonZeroSampleTime > MIC_STUCK_WARN_MS && !micZeroSampleWarned) {
+    if (micDiagnosticEnabled && now - micLastNonZeroSampleTime > MIC_STUCK_WARN_MS && !micZeroSampleWarned) {
       Serial.println(F("[MIC] WARN: samples have been exactly zero for several seconds"));
       Serial.println(F("[MIC] HINT: clock/DMA is running but data is silent -- try the other"));
       Serial.println(F("[MIC]       I2S channel slot (LEFT vs RIGHT); this is the classic"));
       Serial.println(F("[MIC]       symptom of reading an inactive channel."));
       micZeroSampleWarned = true;
     }
-    if (now - micLastNonConstantTime > MIC_STUCK_WARN_MS && !micStuckWarned) {
+    if (micDiagnosticEnabled && now - micLastNonConstantTime > MIC_STUCK_WARN_MS && !micStuckWarned) {
       Serial.println(F("[MIC] WARN: raw samples appear constant/stuck for several seconds"));
       micStuckWarned = true;
     }
-    if (now - micLastNonSaturatedTime > MIC_STUCK_WARN_MS && !micSaturatedWarned) {
+    if (micDiagnosticEnabled && now - micLastNonSaturatedTime > MIC_STUCK_WARN_MS && !micSaturatedWarned) {
       Serial.println(F("[MIC] WARN: samples appear saturated (clipping) for several seconds"));
       micSaturatedWarned = true;
     }
@@ -324,6 +364,16 @@ uint8_t larsonLevel[NUM_LEDS];
 int larsonPos = 0;
 int larsonDir = 1;
 
+// AUDIO_PULSE state
+float audioNormalizedLevel = 0.0f; // instantaneous 0..1, before attack/release smoothing
+float audioSmoothedLevel = 0.0f;   // attack/release-smoothed 0..1, drives the visual pulse radius
+float audioClapFlash = 0.0f;       // 0..1, decays each frame; brief near-full-brightness overlay
+unsigned long audioLastDiagPrint = 0;
+
+// Forward declaration: defined near the other step functions below, but
+// resetModeState() (just ahead) needs to call it for immediate mode entry.
+void renderAudioIdleGlow();
+
 void printModeAnnouncement() {
   Serial.printf("[MODE] %d - %s\n", currentMode, MODE_NAMES[currentMode]);
 }
@@ -334,12 +384,72 @@ void advanceMode() {
   printModeAnnouncement();
 }
 
+// Button 4 long press: jump into AUDIO_PULSE, remembering the mode to
+// return to; pressing long again exits back to that remembered mode.
+void toggleAudioPulseMode() {
+  if (currentMode != MODE_AUDIO_PULSE) {
+    modeBeforeAudioPulse = currentMode;
+    currentMode = MODE_AUDIO_PULSE;
+  } else {
+    currentMode = modeBeforeAudioPulse;
+  }
+  modeChanged = true;
+  printModeAnnouncement();
+}
+
+// Button 4 short press: cycles among audio-reactive modes. Only AUDIO_PULSE
+// exists today, so this is a documented no-op placeholder for when more are
+// added, and only does anything while an audio-reactive mode is active.
+void audioPulseShortPress() {
+  if (currentMode == MODE_AUDIO_PULSE) {
+    Serial.println(F("[BUTTON] Button 4 short press (only one audio-reactive mode exists yet)"));
+  }
+}
+
+// Distinct from buttonPressedEdge()'s single press-edge signal: this needs
+// both press-start (to time the hold) and release (to fire a short press),
+// so it manages button4's debounce fields directly rather than reusing the
+// simpler helper used by the other three buttons.
+void handleButton4() {
+  int reading = digitalRead(button4.pin);
+
+  if (reading != button4.lastRawReading) {
+    button4.lastDebounceTime = millis();
+  }
+
+  if ((millis() - button4.lastDebounceTime) > DEBOUNCE_DELAY_MS) {
+    if (reading != button4.stableState) {
+      button4.stableState = reading;
+      if (button4.stableState == LOW) {
+        button4PressStartTime = millis();
+        button4LongPressFired = false;
+      } else if (!button4LongPressFired) {
+        audioPulseShortPress();
+      }
+    }
+  }
+
+  if (button4.stableState == LOW && !button4LongPressFired &&
+      (millis() - button4PressStartTime) >= BUTTON4_LONG_PRESS_MS) {
+    button4LongPressFired = true;
+    toggleAudioPulseMode();
+  }
+
+  button4.lastRawReading = reading;
+}
+
 void toggleMute() {
   muted = !muted;
   Serial.println(F("[BUTTON] Mute pressed"));
   if (muted) {
-    strip.clear();
-    strip.show();
+    // Every other mode blanks to black on mute. AUDIO_PULSE instead holds
+    // its normal idle glow and ignores audio while muted, per spec.
+    if (currentMode == MODE_AUDIO_PULSE) {
+      renderAudioIdleGlow();
+    } else {
+      strip.clear();
+      strip.show();
+    }
     Serial.println(F("[SYSTEM] Muted"));
   } else {
     Serial.println(F("[SYSTEM] Unmuted"));
@@ -368,6 +478,9 @@ void resetModeState() {
   larsonDir = 1;
   memset(twinkleLevel, 0, sizeof(twinkleLevel));
   memset(larsonLevel, 0, sizeof(larsonLevel));
+  audioNormalizedLevel = 0.0f;
+  audioSmoothedLevel = 0.0f;
+  audioClapFlash = 0.0f;
 
   // Static (non-animated) modes render once here; animated modes render
   // on their own timing inside updateAnimation().
@@ -391,6 +504,9 @@ void resetModeState() {
     case 4: // Solid White (dim)
       strip.fill(strip.Color(255, 255, 255)); // dimmed by global BRIGHTNESS
       strip.show();
+      break;
+    case MODE_AUDIO_PULSE:
+      renderAudioIdleGlow(); // immediate idle glow; stepAudioPulse() takes over next frame
       break;
     default:
       strip.clear();
@@ -506,6 +622,72 @@ void stepLarson() {
   }
 }
 
+// Warm, dim, uniform glow -- the AUDIO_PULSE baseline shown in silence and
+// (unlike every other mode) also shown in place of blanking while muted.
+void renderAudioIdleGlow() {
+  uint8_t r = (uint8_t)(255 * AUDIO_IDLE_BRIGHTNESS);
+  uint8_t g = (uint8_t)(120 * AUDIO_IDLE_BRIGHTNESS);
+  uint8_t b = (uint8_t)(30 * AUDIO_IDLE_BRIGHTNESS);
+  strip.fill(strip.Color(r, g, b));
+  strip.show();
+}
+
+void stepAudioPulse() {
+  const unsigned long interval = 30; // ~33Hz, smooth enough for a pulse effect
+  if (millis() - lastStepTime < interval) return;
+  lastStepTime = millis();
+
+  float rawRms = micLatestRms;
+
+  // Normalize to 0..1 against the hardware-observed noise floor and a
+  // ceiling roughly at the top of normal loud speech/music.
+  float norm = (rawRms - AUDIO_NOISE_FLOOR) / (AUDIO_MAX_RMS - AUDIO_NOISE_FLOOR);
+  norm = constrain(norm, 0.0f, 1.0f);
+  audioNormalizedLevel = norm;
+
+  // Fast attack / slow release: the visual jumps up quickly on speech or a
+  // clap, but eases back down instead of flickering between samples.
+  float rate = (norm > audioSmoothedLevel) ? AUDIO_ATTACK_SMOOTHING : AUDIO_RELEASE_SMOOTHING;
+  audioSmoothedLevel += (norm - audioSmoothedLevel) * rate;
+
+  // Clap/transient flash: a distinct threshold well above normal loud
+  // speech (see AUDIO_CLAP_THRESHOLD comment), decaying quickly on its own
+  // timeline rather than through the slow release smoothing above.
+  bool clapNow = rawRms > AUDIO_CLAP_THRESHOLD;
+  if (clapNow) {
+    audioClapFlash = 1.0f;
+  } else {
+    audioClapFlash *= AUDIO_CLAP_DECAY;
+  }
+
+  // Render: idle glow everywhere, with a brighter region expanding outward
+  // from the center as audioSmoothedLevel rises, plus a brief near-full
+  // flash overlay on claps. Never calls strip.setBrightness() here, so the
+  // user's currently-selected global brightness level is left untouched.
+  const float center = (NUM_LEDS - 1) / 2.0f;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    float dist = fabsf(i - center) / center; // 0 at center .. 1 at the ends
+    float pulse = (audioSmoothedLevel - dist) / AUDIO_EDGE_SOFTNESS;
+    pulse = constrain(pulse, 0.0f, 1.0f);
+
+    float level = AUDIO_IDLE_BRIGHTNESS + pulse * (1.0f - AUDIO_IDLE_BRIGHTNESS);
+    if (audioClapFlash > level) level = audioClapFlash;
+
+    uint8_t r = (uint8_t)(255 * level);
+    uint8_t g = (uint8_t)(120 * level);
+    uint8_t b = (uint8_t)(30 * level);
+    strip.setPixelColor(i, strip.Color(r, g, b));
+  }
+  strip.show();
+
+  unsigned long now = millis();
+  if (now - audioLastDiagPrint >= 200) {
+    audioLastDiagPrint = now;
+    Serial.printf("[AUDIO] rms=%.0f norm=%.2f smoothed=%.2f clap=%d\n",
+                  rawRms, audioNormalizedLevel, audioSmoothedLevel, clapNow ? 1 : 0);
+  }
+}
+
 void updateAnimation() {
   switch (currentMode) {
     case 5: stepForwardWalk(); break;
@@ -515,6 +697,7 @@ void updateAnimation() {
     case 9: stepBreathing(); break;
     case 10: stepTwinkle(); break;
     case 11: stepLarson(); break;
+    case MODE_AUDIO_PULSE: stepAudioPulse(); break;
     default: break; // modes 0-4 are static, already rendered on entry
   }
 }
@@ -542,9 +725,14 @@ void setup() {
   Serial.println(F("[BUTTON] GPIO10 using INPUT_PULLUP (Mode)"));
   Serial.println(F("[BUTTON] GPIO11 using INPUT_PULLUP (Mute)"));
   Serial.println(F("[BUTTON] GPIO17 using INPUT_PULLUP (Brightness)"));
-  Serial.println(F("[BUTTON] GPIO5 using INPUT_PULLUP (Button 4 - mic diagnostic toggle)"));
+  Serial.println(F("[BUTTON] GPIO5 using INPUT_PULLUP (Button 4 - hold: toggle AUDIO_PULSE, press: cycle audio modes)"));
 
   micReady = initMic(); // initMic() itself prints full boot diagnostics
+  if (micReady) {
+    // Capture runs continuously from boot (independent of the diagnostic
+    // print toggle) so audio-reactive modes always have fresh RMS data.
+    resetMicSession(millis());
+  }
 
   currentMode = 0;
   modeChanged = true;
@@ -556,7 +744,7 @@ void loop() {
   if (buttonPressedEdge(modeButton)) advanceMode();
   if (buttonPressedEdge(muteButton)) toggleMute();
   if (buttonPressedEdge(brightnessButton)) cycleBrightness();
-  if (buttonPressedEdge(button4)) toggleMicDiagnostic();
+  handleButton4(); // short press = cycle audio modes, long press = toggle AUDIO_PULSE
 
   updateMicDiagnostic(); // independent of LED mute state -- always serviced
 

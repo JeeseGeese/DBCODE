@@ -11,8 +11,9 @@ LED strip, controlled by four physical pushbuttons.
 - **LEDs:** 58x WS2812B-compatible addressable LEDs, single data line
 - **Buttons:** 4x momentary pushbuttons, each wired between its GPIO pin
   and GND, using the ESP32's internal pull-up (no external resistors)
+- **Microphone:** 1x INMP441 I2S MEMS microphone
 - **Power:** ESP32 5V pin and LED strip 5V share a common ground with the
-  ESP32 GND pin
+  ESP32 GND pin; INMP441 VDD runs from the ESP32 3V3 pin
 
 ## GPIO assignments
 
@@ -22,12 +23,19 @@ LED strip, controlled by four physical pushbuttons.
 | Mode button | 10 | `INPUT_PULLUP`, wired to GND — cycles LED mode |
 | Mute button | 11 | `INPUT_PULLUP`, wired to GND — toggles LEDs off/on |
 | Brightness button | 17 | `INPUT_PULLUP`, wired to GND — cycles brightness |
-| Button 4 (print-only) | 5 | `INPUT_PULLUP`, wired to GND — logs press only |
+| Button 4 | 5 | `INPUT_PULLUP`, wired to GND — toggles mic diagnostic mode |
+| INMP441 SCK/BCLK | 6 | I2S bit clock, driven by the ESP32 (I2S master) |
+| INMP441 WS/LRCLK | 7 | I2S word select, driven by the ESP32 (I2S master) |
+| INMP441 SD/DATA | 15 | I2S data input to the ESP32 |
+
+INMP441 `L/R` is tied to GND (selects the LEFT I2S channel) and `GND` is
+tied to a common ground shared with the ESP32.
 
 GPIO45 was tried as a candidate spare pin during wiring diagnostics and
 failed to respond even to a direct short to GND (likely not broken out to a
 usable header pin on this board, or a bad physical connection) — it is not
-used by this firmware.
+used by this firmware. GPIO8 was the originally planned mic data pin before
+the board's actual wiring was traced to GPIO15 instead.
 
 ## Build instructions
 
@@ -87,11 +95,65 @@ left off.
 `10 → 15 → 20 → 10 ...`. Never reaches full brightness at any level,
 including in "white" modes.
 
-**Button 4 (GPIO5)** — currently print-only; logs `[BUTTON] Button 4
-pressed` to Serial with no other effect. Reserved for future use.
+**Button 4 (GPIO5)** — toggles the microphone diagnostic mode described
+below. Does not affect LED mode, mute, or brightness.
 
 All brightness levels stay well below full brightness (255) — even the
 brightest setting (20/255) keeps LED output conservative.
+
+## Microphone (INMP441) diagnostic
+
+Button 4 toggles a live microphone diagnostic on and off:
+
+```
+[MIC] Diagnostic enabled
+[MIC] bytes=8192 rawMin=-35207 rawMax=32493 peak=33953 rms=11739
+...
+[MIC] Diagnostic disabled
+```
+
+While enabled, it reads I2S audio continuously (non-blocking relative to
+the button/animation loop — see I2S config below) and prints roughly 8
+readings/second: bytes read that window, raw sample min/max, and a
+DC-corrected peak and RMS. Buttons and LED animations keep working
+normally while the diagnostic runs.
+
+**I2S configuration** (`I2S_NUM_0`, master receive mode):
+
+- Sample rate: 16000 Hz
+- 32-bit I2S words; the INMP441 left-justifies a 24-bit sample in each
+  word, so firmware recovers it with `sample >> 8`
+- LEFT channel selected (`I2S_CHANNEL_FMT_ONLY_LEFT`) — correct because
+  the INMP441's `L/R` pin is tied to GND; it would need RIGHT instead if
+  `L/R` were tied to VDD
+- Standard I2S format (`I2S_COMM_FORMAT_STAND_I2S`)
+- 4 DMA buffers × 256 frames
+- 20ms read timeout — a pure 0-tick non-blocking poll was tried first but
+  raced the DMA's buffer-ready signal and produced false "0 bytes read"
+  errors even though the peripheral was working correctly; 20ms resolved
+  this while staying short enough to keep buttons/animations responsive
+- Streaming DC correction (slow exponential offset tracker) applied to
+  every sample before peak/RMS accumulation, so a constant bias can't
+  mask or exaggerate real audio content
+
+**Fault detection:** the diagnostic reports (once each, until the
+condition clears) if I2S initialization fails, if reads return 0 bytes
+repeatedly, if raw samples stay exactly zero for several seconds, if raw
+samples stay constant/stuck at any value for several seconds, or if
+samples stay saturated near the 24-bit signed range for several seconds.
+
+**Expected response** (hardware-verified):
+
+| Condition | Typical RMS |
+|---|---|
+| Quiet room | ~8,000–20,000 (ambient + mic self-noise floor) |
+| Normal speech near mic | ~40,000–360,000, rising/falling with speech |
+| Light tap near the mic board | ~19,000–23,000, brief bump |
+| Clap near mic | ~100,000–900,000, sharp spike then fast decay |
+
+Very close or very loud claps may briefly push raw samples to the 24-bit
+saturation limit (~±8,388,607) — this is normal clipping from an
+excessively loud/close transient, not a fault.
 
 ## Safety warnings
 

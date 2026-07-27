@@ -647,13 +647,38 @@ boundaries and that `PHYSICAL_LED_COUNT <= NUM_LEDS`) -- they do not
 create a second NeoPixel object, do not replace the existing LED driver,
 and do not change any effect's output by themselves.
 
-**Optional row-identification test (serial `6`):** lights Row 1 (dim red,
-1s), Row 2 (dim green, 1s), Row 3 (dim blue, 1s), then all 42 (dim white,
-500ms), each separated by an off gap, writing directly to the existing
-`strip` object (never a second NeoPixel instance). Cancelable at any point
-via `k`. This confirms only that each phase was *commanded* -- physical
-row-to-LED mapping must be visually verified by the user, not assumed from
-this test having run.
+**LED index mapping tool (serial `6`, revised):** an earlier version of
+this diagnostic assumed `LED_ROW_1/2/3` (Config.h) already matched the
+physical wiring order and simply flashed each candidate range in turn. The
+user reported it did not correctly identify the physical rows or colors --
+that assumption is now treated as **unverified**, and `6` was rewritten
+into an actual calibration tool rather than an assumption-confirming
+flash sequence. Three phases, writing directly to the existing `strip`
+object (never a second NeoPixel instance):
+
+- **Phase A -- color order check:** all 42 physically-expected LEDs lit
+  red, then green, then blue (~1s each), printing `[LED MAP] COLOR TEST:
+  RED/GREEN/BLUE`. Checks whether the configured `NEO_GRB` pixel order
+  actually produces the expected color on the physical strip -- this had
+  never been directly tested before.
+- **Phase B -- individual index walk:** exactly one logical index lit at a
+  time (dim cyan), starting at 0, printing `[LED MAP] INDEX n`.
+  Interactive, not auto-timed, since the user needs time to physically
+  locate each LED: `n`/`p` step one index, `j` jumps forward 10, `r`
+  restarts at 0, `x` exits, `k` cancels. A worksheet prompt (suggested
+  notation + example) prints once when this phase begins.
+- **Phase C -- optional candidate-row check**, reachable from Phase B via
+  `c`: flashes the candidate `LED_ROW_1/2/3` ranges in turn, explicitly
+  labeled `[LED MAP] CANDIDATE ROW 1: 0-9` / `2: 10-19` / `3: 20-41` (never
+  "confirmed"), then returns to Phase B at whichever index was active.
+
+Cancelable at every phase via `k` (mutually exclusive with `2`/`3`/`5`,
+same as before). Exiting (`x`) or cancelling (`k`) prints a completion
+checklist of exactly what the user needs to physically observe and
+report: the location of index 0, the row boundaries, the last responsive
+LED, each row's direction, and whether red/green/blue were correct. **This
+tool does not itself confirm the physical mapping or color order** -- it
+only makes them observable; the user's own report is authoritative.
 
 **Experimental motor+LED coexistence (`MotorLedPowerMode`, see
 `include/MotorPowerGuard.h`):** `MotorPowerGuard`'s existing `FULL_MUTE`
@@ -759,3 +784,39 @@ plus spot checks in `PREPARING`/`FORWARD_STOP`/`REVERSE_STOP`/`RELEASING`;
 `Controls.cpp`'s single-char commands, the `effects`/`overlays`/`status`
 word commands, and back-to-back input (`2k` single write). All passed.
 `k` may now be treated as reliable for `5`, same as every other test.
+
+## 22. Audio serial-output toggle (serial `7`)
+
+The serial monitor was hard to read because audio-related output printed
+continuously. Three previously-conflated concepts, per the request that
+prompted this: **audio processing** (I2S sampling, RMS/envelope
+computation), **the audio-reactive overlay** (LED effect driven by that
+processing), and **audio serial logging** (whether any of it gets printed).
+`7` controls only the third.
+
+Gated behind `AudioAnalyzer.cpp`'s `setAudioLogEnabled()`/
+`isAudioLogEnabled()` (default **off**): the periodic `[AUDIO]`
+rms/envelope heartbeat, and the mic fault-check `WARN`/`HINT` messages
+(samples stuck/saturated/zero, I2S reads returning 0 repeatedly). The
+heartbeat's own interval timer keeps advancing while logging is off, so
+re-enabling it later doesn't immediately fire a burst from a stale
+timestamp. **Not** gated: the one-time I2S init success/error banner
+(prints once at boot regardless), and `printAudioDiagnostics()` (the `d`
+command / Button4 double-press / folded into `status`) -- that's a
+deliberate, on-demand pull the user explicitly asked for, not the
+continuous background push this toggle addresses. Toggling prints exactly
+one line: `[AUDIO LOG] ON` or `[AUDIO LOG] OFF`.
+
+Microphone sampling, envelope smoothing, and audio-reactive LED rendering
+are all unaffected by this toggle -- they keep running with logging off,
+which was validated by leaving an audio overlay active with `7` off and
+confirming the LEDs still responded to sound while the serial monitor
+stayed quiet.
+
+`?` (the same central-dispatcher status command used throughout this doc)
+now also reports `[AUDIO STATUS] micReady=.. processingSuspended=..
+overlayEnabled=.. logEnabled=..` -- four independent flags, since
+"processing suspended" (temporary, only during `MotorPriorityMode`),
+"overlay enabled" (the LED effect), and "log enabled" (serial output) are
+three different things that happened to get conflated in the original
+report.

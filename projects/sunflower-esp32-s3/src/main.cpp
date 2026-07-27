@@ -109,7 +109,8 @@ void setup() {
   Serial.println(F("[MOTOR BREAKAWAY] Serial command: '3' = aggressive breakaway test (jolt + 1500ms drive x2 cycles)"));
   Serial.println(F("[MOTOR LED POWER] Serial command: '4' = cycle experimental motor-motion LED brightness (0/4/8/12/16)"));
   Serial.println(F("[MOTOR+LED TEST] Serial command: '5' = experimental motor+dim-LED coexistence test (forward+reverse)"));
-  Serial.println(F("[LED ROW TEST] Serial command: '6' = optional LED row-identification test (unconfirmed mapping)"));
+  Serial.println(F("[LED MAP] Serial command: '6' = LED index mapping tool (color test + interactive index walk)"));
+  Serial.println(F("[AUDIO LOG] Serial command: '7' = toggle continuous audio serial output (default OFF)"));
 #endif
 
   lastFrameTime = millis();
@@ -123,7 +124,7 @@ void setup() {
 // because the two tests are mutually exclusive with each other --
 // startPriorityTest() below checks breakawayPhase, and startBreakawayTest()
 // (further down) checks priorityTestPhase right back. MotorLedTestPhase and
-// RowTestPhase (full implementations further below, after MOTOR BREAKAWAY
+// LedMapPhase (full implementations further below, after MOTOR BREAKAWAY
 // TEST) are forward-declared here for the same reason -- all four tests
 // drive the motor and/or write LEDs directly and must be mutually
 // exclusive with each other.
@@ -153,19 +154,25 @@ enum class MotorLedTestPhase {
 };
 MotorLedTestPhase motorLedTestPhase = MotorLedTestPhase::IDLE;
 
-enum class RowTestPhase {
+// LED index mapping tool ('6' -- see BEGIN LED INDEX MAPPING TOOL below).
+// Replaced an earlier assumption-based row test; forward-declared here for
+// the same mutual-exclusion reason as BreakawayPhase above.
+enum class LedMapPhase {
   IDLE,
-  ROW1,
-  ROW1_OFF,
-  ROW2,
-  ROW2_OFF,
-  ROW3,
-  ROW3_OFF,
-  ALL_WHITE,
-  ALL_OFF,
+  COLOR_RED,
+  COLOR_GREEN,
+  COLOR_BLUE,
+  COLOR_OFF,          // brief gap before entering INDEX_WALK
+  INDEX_WALK,          // interactive -- no auto-timer, waits for n/p/j/r/c/x
+  CANDIDATE_ROW1,
+  CANDIDATE_ROW1_OFF,
+  CANDIDATE_ROW2,
+  CANDIDATE_ROW2_OFF,
+  CANDIDATE_ROW3,
+  CANDIDATE_ROW3_OFF,
 };
-RowTestPhase rowTestPhase = RowTestPhase::IDLE;
-bool isRowTestActive() { return rowTestPhase != RowTestPhase::IDLE; }
+LedMapPhase ledMapPhase = LedMapPhase::IDLE;
+bool isLedMapActive() { return ledMapPhase != LedMapPhase::IDLE; }
 
 // Forward declaration: serviceEmergencyStop() (full definition further
 // below, alongside the emergency-stop latch and the central serial
@@ -217,7 +224,7 @@ void startPriorityTest() {
   // coexistence test, and the '6' row test (all defined below) -- all four
   // drive the motor and/or write LEDs directly.
   if (priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isRowTestActive()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -365,7 +372,7 @@ void startBreakawayTest() {
   // write LEDs directly; running more than one at a time would fight over
   // both.
   if (breakawayPhase != BreakawayPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isRowTestActive()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -527,7 +534,7 @@ unsigned long motorLedTestPhaseStartMs = 0;
 void startMotorLedTest() {
   // Mutually exclusive with '2'/'3'/'6' -- see their own guards above.
   if (motorLedTestPhase != MotorLedTestPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
-      breakawayPhase != BreakawayPhase::IDLE || isRowTestActive()) {
+      breakawayPhase != BreakawayPhase::IDLE || isLedMapActive()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -608,22 +615,41 @@ void updateMotorLedTest() {
 }
 // END MOTOR+LED COEXISTENCE TEST
 
-// BEGIN LED ROW IDENTIFICATION TEST (optional diagnostic -- see TASK C)
-// Confirms which physical LEDs correspond to LED_ROW_1/2/3 (see Config.h)
-// by lighting each row in a distinct dim color in turn, directly on
-// `strip` -- bypasses the normal frameBuffer render pipeline for its
-// duration (see isRowTestActive() gating loop()'s render section above),
+// BEGIN LED INDEX MAPPING TOOL (serial command '6')
+// Replaces an earlier "row identification test" that assumed the logical
+// LED_ROW_1/2/3 ranges (Config.h) already matched the physical wiring
+// order -- the user reported command 6 did not correctly identify
+// physical rows/colors, so that assumption is now treated as UNVERIFIED
+// (see docs/DRV8833_MOTOR_BRINGUP.md for the full writeup). This tool
+// determines the real mapping instead of assuming it:
+//   Phase A (COLOR_RED/GREEN/BLUE/OFF): all physically-expected LEDs lit
+//     red, then green, then blue, ~1s each -- checks whether the
+//     configured NEO_GRB pixel order actually produces the expected color
+//     on the physical strip.
+//   Phase B (INDEX_WALK): exactly one logical index lit at a time,
+//     interactively stepped by the user, so they can record where each
+//     index physically lands.
+//   Phase C (CANDIDATE_ROW1/2/3): reachable from within Phase B via 'c' --
+//     an OPTIONAL, clearly-labeled check of the candidate LED_ROW_1/2/3
+//     ranges. Never claimed as confirmed.
+// Bypasses the normal frameBuffer render pipeline entirely for its whole
+// duration (see isLedMapActive() gating loop()'s render section above),
 // so there is exactly one strip.show() owner active at any moment. No
-// explicit "restore previous state" bookkeeping is needed: this test never
+// explicit "restore previous state" bookkeeping is needed: this tool never
 // touches frameBuffer, base effect, overlay, brightness, or mute state --
 // the very next normal frame after it ends recomposes frameBuffer from
-// scratch and writes it to `strip` as usual. Does NOT claim the row
-// mapping is physically confirmed -- only that each phase was commanded;
-// the user must visually verify which physical LEDs actually lit.
-constexpr uint8_t ROW_TEST_DIM_LEVEL = 20;  // low brightness per channel, out of 255
-unsigned long rowTestPhaseStartMs = 0;
+// scratch and writes it to `strip` as usual. No second NeoPixel object.
+constexpr uint8_t LED_MAP_DIM_LEVEL = 22;  // low brightness per channel, out of 255
+unsigned long ledMapPhaseStartMs = 0;
+uint16_t ledMapCurrentIndex = 0;
 
-void rowTestShowRegion(const LedRegion &region, uint8_t r, uint8_t g, uint8_t b) {
+void ledMapShowAll(uint8_t r, uint8_t g, uint8_t b) {
+  strip.clear();
+  for (uint16_t i = 0; i < PHYSICAL_LED_COUNT; i++) strip.setPixelColor(i, strip.Color(r, g, b));
+  strip.show();
+}
+
+void ledMapShowRegion(const LedRegion &region, uint8_t r, uint8_t g, uint8_t b) {
   strip.clear();
   for (uint16_t i = region.start; i < region.start + region.count; i++) {
     strip.setPixelColor(i, strip.Color(r, g, b));
@@ -631,105 +657,207 @@ void rowTestShowRegion(const LedRegion &region, uint8_t r, uint8_t g, uint8_t b)
   strip.show();
 }
 
-void rowTestShowAll(uint8_t r, uint8_t g, uint8_t b) {
-  for (uint16_t i = 0; i < PHYSICAL_LED_COUNT; i++) strip.setPixelColor(i, strip.Color(r, g, b));
-  strip.show();
+void ledMapPrintWorksheetIntro() {
+  Serial.println(F("[LED MAP] Record physical position for each index."));
+  Serial.println(F("[LED MAP] Suggested notation:"));
+  Serial.println(F("[LED MAP] index -> row, position, direction"));
+  Serial.println(F("[LED MAP] Example: 0 -> row 2, leftmost"));
+  Serial.println(
+      F("[LED MAP] Controls: n=next p=previous j=jump+10 r=restart-at-0 c=candidate-row-test x=exit k=cancel"));
 }
 
-void startRowTest() {
+// idx is always < PHYSICAL_LED_COUNT (<= NUM_LEDS, see Config.h's
+// static_assert) -- every caller below clamps before reaching here.
+void ledMapGoToIndex(uint16_t idx) {
+  ledMapCurrentIndex = idx;
+  strip.clear();
+  strip.setPixelColor(ledMapCurrentIndex, strip.Color(0, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL));  // cyan
+  strip.show();
+  Serial.printf("[LED MAP] INDEX %u\n", ledMapCurrentIndex);
+}
+
+void ledMapPrintCompletionReminder() {
+  Serial.println(F("[LED MAP] Please report:"));
+  Serial.println(F("[LED MAP]  - physical location of index 0"));
+  Serial.println(F("[LED MAP]  - last index in first physical row"));
+  Serial.println(F("[LED MAP]  - first index in second physical row"));
+  Serial.println(F("[LED MAP]  - last index in second physical row"));
+  Serial.println(F("[LED MAP]  - first index in third physical row"));
+  Serial.println(F("[LED MAP]  - last responsive physical LED"));
+  Serial.println(F("[LED MAP]  - whether each row runs left-to-right or right-to-left"));
+  Serial.println(F("[LED MAP]  - whether red/green/blue were correct"));
+}
+
+void startLedMap() {
   // Mutually exclusive with '2'/'3'/'5' -- see their own guards above.
-  if (isRowTestActive() || priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
+  if (isLedMapActive() || priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
       motorLedTestPhase != MotorLedTestPhase::IDLE) {
     return;
   }
-  Serial.println(F("[LED ROW TEST] Row 1 (dim red) -- NOT yet physically confirmed, observe and verify"));
-  rowTestShowRegion(LED_ROW_1, ROW_TEST_DIM_LEVEL, 0, 0);
-  rowTestPhase = RowTestPhase::ROW1;
-  rowTestPhaseStartMs = millis();
+  Serial.println(F("[LED MAP] COLOR TEST: RED"));
+  ledMapShowAll(LED_MAP_DIM_LEVEL, 0, 0);
+  ledMapPhase = LedMapPhase::COLOR_RED;
+  ledMapPhaseStartMs = millis();
 }
 
 // Cancelable at every phase via 'k' -- see pollSerialDispatcher() below.
-void cancelRowTest() {
-  if (!isRowTestActive()) return;
+void cancelLedMap() {
+  if (!isLedMapActive()) return;
   strip.clear();
   strip.show();
-  rowTestPhase = RowTestPhase::IDLE;
-  Serial.println(F("[LED ROW TEST] Cancelled"));
+  ledMapPhase = LedMapPhase::IDLE;
+  Serial.println(F("[LED MAP] Cancelled"));
+  ledMapPrintCompletionReminder();
 }
 
-void updateRowTest() {
-  if (!isRowTestActive()) return;
-  unsigned long now = millis();
-  unsigned long elapsed = now - rowTestPhaseStartMs;
+// 'x' -- deliberate, non-emergency exit from within INDEX_WALK.
+void exitLedMap() {
+  if (!isLedMapActive()) return;
+  strip.clear();
+  strip.show();
+  ledMapPhase = LedMapPhase::IDLE;
+  Serial.println(F("[LED MAP] Exit -- restoring previous LED state"));
+  ledMapPrintCompletionReminder();
+}
 
-  switch (rowTestPhase) {
-    case RowTestPhase::IDLE:
+// 'c' -- Phase C, reachable only from INDEX_WALK. Returns to INDEX_WALK
+// (re-lighting whichever index was active before) once it completes.
+void startLedMapCandidateRows() {
+  if (ledMapPhase != LedMapPhase::INDEX_WALK) return;
+  Serial.println(F("[LED MAP] Candidate ranges are unverified -- observe and report."));
+  Serial.println(F("[LED MAP] CANDIDATE ROW 1: 0-9"));
+  ledMapShowRegion(LED_ROW_1, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL);
+  ledMapPhase = LedMapPhase::CANDIDATE_ROW1;
+  ledMapPhaseStartMs = millis();
+}
+
+// Dispatched only while ledMapPhase == INDEX_WALK (see pollSerialDispatcher()
+// below) -- n/p/j/r/c/x are otherwise ordinary Controls.cpp bytes.
+void handleLedMapKey(char c) {
+  if (ledMapPhase != LedMapPhase::INDEX_WALK) return;  // ignore controls during auto-timed phases A/C
+  switch (c) {
+    case 'n':
+    case 'N':
+      if (ledMapCurrentIndex + 1 < PHYSICAL_LED_COUNT) ledMapGoToIndex(ledMapCurrentIndex + 1);
       break;
-    case RowTestPhase::ROW1:
+    case 'p':
+    case 'P':
+      if (ledMapCurrentIndex > 0) ledMapGoToIndex(ledMapCurrentIndex - 1);
+      break;
+    case 'j':
+    case 'J': {
+      uint16_t target = (uint16_t)min((int)ledMapCurrentIndex + 10, (int)PHYSICAL_LED_COUNT - 1);
+      ledMapGoToIndex(target);
+      break;
+    }
+    case 'r':
+    case 'R':
+      ledMapGoToIndex(0);
+      break;
+    case 'c':
+    case 'C':
+      startLedMapCandidateRows();
+      break;
+    case 'x':
+    case 'X':
+      exitLedMap();
+      break;
+    default:
+      break;  // ignore anything else while mapping owns the strip
+  }
+}
+
+void updateLedMap() {
+  if (!isLedMapActive()) return;
+  serviceEmergencyStop();  // defensive re-check before any transition -- see TASK 4 comment above
+  if (!isLedMapActive()) return;  // may have just been cancelled by the line above
+  unsigned long now = millis();
+  unsigned long elapsed = now - ledMapPhaseStartMs;
+
+  switch (ledMapPhase) {
+    case LedMapPhase::IDLE:
+    case LedMapPhase::INDEX_WALK:
+      break;  // interactive -- no auto-timer, waits for handleLedMapKey()
+    case LedMapPhase::COLOR_RED:
+      if (elapsed >= 1000) {
+        Serial.println(F("[LED MAP] COLOR TEST: GREEN"));
+        ledMapShowAll(0, LED_MAP_DIM_LEVEL, 0);
+        ledMapPhase = LedMapPhase::COLOR_GREEN;
+        ledMapPhaseStartMs = now;
+      }
+      break;
+    case LedMapPhase::COLOR_GREEN:
+      if (elapsed >= 1000) {
+        Serial.println(F("[LED MAP] COLOR TEST: BLUE"));
+        ledMapShowAll(0, 0, LED_MAP_DIM_LEVEL);
+        ledMapPhase = LedMapPhase::COLOR_BLUE;
+        ledMapPhaseStartMs = now;
+      }
+      break;
+    case LedMapPhase::COLOR_BLUE:
       if (elapsed >= 1000) {
         strip.clear();
         strip.show();
-        rowTestPhase = RowTestPhase::ROW1_OFF;
-        rowTestPhaseStartMs = now;
+        ledMapPhase = LedMapPhase::COLOR_OFF;
+        ledMapPhaseStartMs = now;
       }
       break;
-    case RowTestPhase::ROW1_OFF:
+    case LedMapPhase::COLOR_OFF:
       if (elapsed >= 300) {
-        Serial.println(F("[LED ROW TEST] Row 2 (dim green) -- NOT yet physically confirmed, observe and verify"));
-        rowTestShowRegion(LED_ROW_2, 0, ROW_TEST_DIM_LEVEL, 0);
-        rowTestPhase = RowTestPhase::ROW2;
-        rowTestPhaseStartMs = now;
+        ledMapPrintWorksheetIntro();
+        ledMapPhase = LedMapPhase::INDEX_WALK;
+        ledMapGoToIndex(0);
       }
       break;
-    case RowTestPhase::ROW2:
+    case LedMapPhase::CANDIDATE_ROW1:
       if (elapsed >= 1000) {
         strip.clear();
         strip.show();
-        rowTestPhase = RowTestPhase::ROW2_OFF;
-        rowTestPhaseStartMs = now;
+        ledMapPhase = LedMapPhase::CANDIDATE_ROW1_OFF;
+        ledMapPhaseStartMs = now;
       }
       break;
-    case RowTestPhase::ROW2_OFF:
+    case LedMapPhase::CANDIDATE_ROW1_OFF:
       if (elapsed >= 300) {
-        Serial.println(F("[LED ROW TEST] Row 3 (dim blue) -- NOT yet physically confirmed, observe and verify"));
-        rowTestShowRegion(LED_ROW_3, 0, 0, ROW_TEST_DIM_LEVEL);
-        rowTestPhase = RowTestPhase::ROW3;
-        rowTestPhaseStartMs = now;
+        Serial.println(F("[LED MAP] CANDIDATE ROW 2: 10-19"));
+        ledMapShowRegion(LED_ROW_2, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL);
+        ledMapPhase = LedMapPhase::CANDIDATE_ROW2;
+        ledMapPhaseStartMs = now;
       }
       break;
-    case RowTestPhase::ROW3:
+    case LedMapPhase::CANDIDATE_ROW2:
       if (elapsed >= 1000) {
         strip.clear();
         strip.show();
-        rowTestPhase = RowTestPhase::ROW3_OFF;
-        rowTestPhaseStartMs = now;
+        ledMapPhase = LedMapPhase::CANDIDATE_ROW2_OFF;
+        ledMapPhaseStartMs = now;
       }
       break;
-    case RowTestPhase::ROW3_OFF:
+    case LedMapPhase::CANDIDATE_ROW2_OFF:
       if (elapsed >= 300) {
-        Serial.println(F("[LED ROW TEST] All 42 (dim white)"));
-        rowTestShowAll(ROW_TEST_DIM_LEVEL, ROW_TEST_DIM_LEVEL, ROW_TEST_DIM_LEVEL);
-        rowTestPhase = RowTestPhase::ALL_WHITE;
-        rowTestPhaseStartMs = now;
+        Serial.println(F("[LED MAP] CANDIDATE ROW 3: 20-41"));
+        ledMapShowRegion(LED_ROW_3, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL, LED_MAP_DIM_LEVEL);
+        ledMapPhase = LedMapPhase::CANDIDATE_ROW3;
+        ledMapPhaseStartMs = now;
       }
       break;
-    case RowTestPhase::ALL_WHITE:
-      if (elapsed >= 500) {  // "no more than 500ms" per spec
+    case LedMapPhase::CANDIDATE_ROW3:
+      if (elapsed >= 1000) {
         strip.clear();
         strip.show();
-        rowTestPhase = RowTestPhase::ALL_OFF;
-        rowTestPhaseStartMs = now;
+        ledMapPhase = LedMapPhase::CANDIDATE_ROW3_OFF;
+        ledMapPhaseStartMs = now;
       }
       break;
-    case RowTestPhase::ALL_OFF:
-      if (elapsed >= 100) {
-        Serial.println(F("[LED ROW TEST] Complete -- restoring previous LED state"));
-        rowTestPhase = RowTestPhase::IDLE;
+    case LedMapPhase::CANDIDATE_ROW3_OFF:
+      if (elapsed >= 300) {
+        ledMapPhase = LedMapPhase::INDEX_WALK;
+        ledMapGoToIndex(ledMapCurrentIndex);  // back to whichever index was active before Phase C
       }
       break;
   }
 }
-// END LED ROW IDENTIFICATION TEST
+// END LED INDEX MAPPING TOOL
 
 // ============================================================================
 // Emergency-stop latch (see docs/DRV8833_MOTOR_BRINGUP.md, "command-5
@@ -754,7 +882,7 @@ void serviceEmergencyStop() {
   cancelPriorityTest();
   cancelBreakawayTest();
   cancelMotorLedTest();
-  cancelRowTest();
+  cancelLedMap();
   stopMotorBehavior();
   motorStop();  // explicit backstop even though every path above already stops the motor via its own cancel
   clearPendingSerialLine();  // discard any word-command line interrupted mid-type by this 'k'
@@ -809,7 +937,7 @@ void triggerEmergencyStop() {
 // waiting for the next loop() iteration (during which something else
 // could still observe/act on intermediate state).
 //
-// Reserved set: f/k/0/1/2/3/4/5/6/? (checked against Controls.cpp's full
+// Reserved set: f/k/0/1/2/3/4/5/6/7/? (checked against Controls.cpp's full
 // command set -- n,p,o,x,+,-,m,d,h,g,r,b,a,c,v, plus the word commands
 // effects/overlays/status -- with no collisions; two deliberate
 // substitutions from what was originally requested are documented in
@@ -833,6 +961,18 @@ static void pollSerialDispatcher() {
     if (c == 'k' || c == 'K') {
       g_interceptorKSeen++;
       triggerEmergencyStop();
+      continue;
+    }
+
+    // While the LED index mapping tool owns the strip (INDEX_WALK phase
+    // only -- see isLedMapActive()/handleLedMapKey() above), n/p/j/r/c/x
+    // control it instead of their normal Controls.cpp meaning: '2'/'3'/'5'
+    // already refuse to start while it's active, and forwarding unrelated
+    // bytes to Controls.cpp while the mapping tool has exclusive LED
+    // control would be confusing. Every other byte is simply ignored here
+    // (not forwarded) for the same reason.
+    if (isLedMapActive()) {
+      handleLedMapKey((char)c);
       continue;
     }
 
@@ -873,7 +1013,9 @@ static void pollSerialDispatcher() {
     } else if (c == '5') {
       startMotorLedTest();
     } else if (c == '6') {
-      startRowTest();
+      startLedMap();
+    } else if (c == '7') {
+      setAudioLogEnabled(!isAudioLogEnabled());
     } else if (c == '?') {
       printMotorBehaviorDebugState();
       printMotorPriorityDebugState();
@@ -884,10 +1026,17 @@ static void pollSerialDispatcher() {
                     breakawayCycle, (unsigned long)(millis() - breakawayPhaseStartMs));
       Serial.printf("[MOTOR+LED TEST] active=%d phase=%d\n", motorLedTestPhase != MotorLedTestPhase::IDLE ? 1 : 0,
                     (int)motorLedTestPhase);
-      Serial.printf("[LED ROW TEST] active=%d phase=%d\n", isRowTestActive() ? 1 : 0, (int)rowTestPhase);
+      Serial.printf("[LED MAP] active=%d phase=%d index=%u\n", isLedMapActive() ? 1 : 0, (int)ledMapPhase,
+                    ledMapCurrentIndex);
       Serial.printf("[LED CONFIG] NUM_LEDS=%d PHYSICAL_LED_COUNT=%u row1=[%u,%u) row2=[%u,%u) row3=[%u,%u)\n", NUM_LEDS,
                     PHYSICAL_LED_COUNT, LED_ROW_1.start, LED_ROW_1.start + LED_ROW_1.count, LED_ROW_2.start,
                     LED_ROW_2.start + LED_ROW_2.count, LED_ROW_3.start, LED_ROW_3.start + LED_ROW_3.count);
+      // Task 1 (audio serial-output toggle): processing/overlay/logging
+      // are three separate concepts -- see AudioAnalyzer.h's
+      // setAudioLogEnabled() comment.
+      Serial.printf("[AUDIO STATUS] micReady=%d processingSuspended=%d overlayEnabled=%d logEnabled=%d\n",
+                    isMicReady() ? 1 : 0, isAudioProcessingSuspended() ? 1 : 0, isAudioOverlayEnabled() ? 1 : 0,
+                    isAudioLogEnabled() ? 1 : 0);
       // Lightweight, permanent diagnostics (see the dispatcher's own
       // comment above) -- cheap counters/max-trackers, not per-frame
       // prints, so they don't perturb the timing they observe.
@@ -912,7 +1061,7 @@ void loop() {
   updatePriorityTest();        // non-blocking; no-op when the priority test isn't running
   updateBreakawayTest();       // non-blocking; no-op when the breakaway test isn't running
   updateMotorLedTest();        // non-blocking; no-op when the motor+LED coexistence test isn't running
-  updateRowTest();             // non-blocking; no-op when the LED row test isn't running
+  updateLedMap();              // non-blocking; no-op when the LED index mapping tool isn't running
   updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons -- non-blocking, always runs, even during MotorPriorityMode, so
                           // buttons/emergency-stop stay live (Task 3 requirement); serial is handled
@@ -944,8 +1093,8 @@ void loop() {
   pollSerialDispatcher();
 
   // Rendering priority:
-  //   0. row test active -> owns `strip` directly this frame (see
-  //      updateRowTest() above); skip the normal pipeline entirely so
+  //   0. LED map active -> owns `strip` directly this frame (see
+  //      updateLedMap() above); skip the normal pipeline entirely so
   //      there's never more than one strip.show() owner in a frame.
   //   1. muted            -> black (cue suppressed entirely, per spec)
   //   2. visual cue active -> cue frame, at its own fixed brightness cap
@@ -955,8 +1104,8 @@ void loop() {
   // timestamps, so skipping their render call while muted or mid-cue
   // never corrupts or resets anything -- it just isn't computed for
   // frames nobody would see anyway.
-  if (isRowTestActive()) {
-    // Intentionally empty: updateRowTest() (called above) already owns
+  if (isLedMapActive()) {
+    // Intentionally empty: updateLedMap() (called above) already owns
     // every strip.setPixelColor()/show() call for this frame.
   } else if (isMuted()) {
     if (!wasMuted) {

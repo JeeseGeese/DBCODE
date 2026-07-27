@@ -14,6 +14,12 @@ struct AudioFeatures {
   float lowFrequencyEnergy; // 0..1 low-frequency proxy (see AUDIO_BASS_* in Config.h) -- not true FFT bass
   bool clap;                // edge-triggered, cooldown-gated: a sharp loud event just happened
   bool transient;           // edge-triggered, cooldown-gated: a fast envelope rise just happened
+  // BEGIN HARDWARE TEST SUPPORT -- exposes the peak magnitude already
+  // computed internally each window (previously computed, never stored).
+  // Remove this field + its one assignment in AudioAnalyzer.cpp alongside
+  // HardwareTest.h/.cpp when the hardware test is removed.
+  float peak; // raw DC-corrected peak sample magnitude, this window
+  // END HARDWARE TEST SUPPORT
 };
 
 // I2S init (same verified INMP441 config as before: I2S_NUM_0, 16kHz,
@@ -32,5 +38,19 @@ float getNoiseFloorEstimate();
 
 // Full diagnostic dump: current AudioFeatures plus the active tuning
 // constants. Used by Button4 double-press, the 'd' serial command, and
-// folded into 'status'.
+// folded into 'status'. Always prints when called -- this is a deliberate,
+// on-demand pull, not the continuous background output gated below, so it
+// is NOT affected by setAudioLogEnabled().
 void printAudioDiagnostics();
+
+// Gates the CONTINUOUS/repeating audio output only: the periodic [AUDIO]
+// rms/env heartbeat and the mic fault-check WARN/HINT messages (samples
+// stuck/saturated/zero, I2S reads returning 0 repeatedly) -- these are what
+// make the serial monitor hard to read during normal operation. Does NOT
+// affect: I2S init success/error banners (one-time, always print),
+// microphone sampling, envelope/RMS computation, audio-reactive LED
+// rendering, or on-demand dumps (printAudioDiagnostics()/'status') --
+// those are separate concepts (see main.cpp's '7' command comment).
+// Defaults to disabled (quiet) -- see initAudioAnalyzer().
+void setAudioLogEnabled(bool enabled);
+bool isAudioLogEnabled();

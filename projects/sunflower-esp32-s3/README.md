@@ -367,15 +367,16 @@ touched, so they're preserved automatically with no separate restore step.
 | Command | Action |
 |---|---|
 | `f` | `MotorDriver` forward (continuous, fires immediately, no Enter needed) |
-| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority/breakaway/motor+LED/row test; releases/restores `MotorPowerGuard` |
+| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority/breakaway/motor+LED/LED-map test; releases/restores `MotorPowerGuard` |
 | `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* — also releases `MotorPowerGuard` immediately |
 | `1` | `MotorBehavior` IDLE_SWAY *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `2` | Boot-equivalent `MotorPriorityMode` runtime test (Preparing → Forward 250ms → Stop 250ms → Reverse 250ms → Stop → release → back to `MotorBehavior` OFF) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `3` | Aggressive breakaway test: jolt + 1500ms full drive, 2 cycles (see MOTOR BREAKAWAY above) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `4` | Cycle the experimental `DIM_DURING_MOTION` test brightness level: `0, 4, 8, 12, 16` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4`. `k` cancellation was found to be intermittent (~50%) here, root-caused to a two-consumer serial race, and fixed — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21 for the full writeup and validation (10/10 FORWARD, 10/10 REVERSE, plus edge cases) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `6` | Optional LED row-identification test: Row 1 dim red 1s → off → Row 2 dim green 1s → off → Row 3 dim blue 1s → off → all 42 dim white ≤500ms → off. Row mapping is **not** claimed as physically confirmed — visually verify *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard`/`MotorLedPowerMode` state, `MotorPriorityMode` state + LED/audio-suspended flags, and the priority/breakaway/motor+LED/row tests' active/phase state *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `6` | LED index mapping tool (revised — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21). Phase A: color test (red/green/blue, ~1s each, all 42 LEDs). Phase B: interactive single-index walk starting at 0 — `n`/`p` step, `j` jumps +10, `r` restarts at 0, `x` exits, `k` cancels. Phase C (`c` from within Phase B): optional candidate-row check, clearly labeled as unconfirmed. Neither the physical row mapping nor the color order is claimed as confirmed — the tool only makes them observable *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `7` | Toggle continuous audio serial output (the periodic `[AUDIO]` heartbeat and mic fault warnings) — default **off**. Does not affect microphone sampling, audio-reactive LEDs, or on-demand dumps (`d`/`status`) — see `docs/DRV8833_MOTOR_BRINGUP.md` section 22 *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard`/`MotorLedPowerMode` state, `MotorPriorityMode` state + LED/audio-suspended flags, the priority/breakaway/motor+LED/LED-map tests' active/phase state, and audio processing/overlay/log-enabled status *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
 These fire on the single byte, unlike the Enter-terminated commands in
 [Serial controls](#serial-controls) below. They're implemented by
@@ -395,8 +396,13 @@ aren't misread as motor commands. Two deliberate substitutions from what
 was originally planned, both to avoid stealing bytes from existing
 commands: `s` → `k` for motor-stop (`s` is the first letter of `status`),
 and `p` → `2` for the boot-equivalent test (`p` is Controls.cpp's existing
-"previous base effect" command). `3`/`4`/`5`/`6` were each checked against
-the full command map and have no collision.
+"previous base effect" command). `3`/`4`/`5`/`6`/`7` were each checked
+against the full command map and have no collision. While the LED index
+mapping tool (`6`) is active, `n`/`p`/`j`/`r`/`c`/`x` are additionally
+intercepted with mapping-tool-specific meanings (see `6`'s description
+above) instead of their normal `Controls.cpp` meanings -- this is
+context-sensitive (only while `isLedMapActive()`), so those keys behave
+normally the rest of the time.
 
 ### Safety behavior
 

@@ -40,6 +40,17 @@ static bool saturatedWarned = false;
 
 static unsigned long lastHeartbeatPrint = 0;
 
+// See setAudioLogEnabled() in AudioAnalyzer.h -- gates only the continuous
+// heartbeat/fault-warning output below, never sampling/computation itself.
+// Defaults to false (quiet) per the serial-readability request.
+static bool audioLogEnabled = false;
+
+void setAudioLogEnabled(bool enabled) {
+  audioLogEnabled = enabled;
+  Serial.println(enabled ? F("[AUDIO LOG] ON") : F("[AUDIO LOG] OFF"));
+}
+bool isAudioLogEnabled() { return audioLogEnabled; }
+
 static void resetWindow(unsigned long now) {
   bytesThisWindow = 0;
   rawMin = INT32_MAX;
@@ -126,7 +137,7 @@ static void captureSamples() {
   if (err != ESP_OK || bytesRead == 0) {
     zeroByteStreak++;
     if (zeroByteStreak > MIC_ZERO_BYTE_WARN_THRESHOLD && !zeroByteWarned) {
-      Serial.println(F("[MIC] WARN: I2S reads returning 0 bytes repeatedly - check wiring/init"));
+      if (audioLogEnabled) Serial.println(F("[MIC] WARN: I2S reads returning 0 bytes repeatedly - check wiring/init"));
       zeroByteWarned = true;
     }
     return;
@@ -181,16 +192,18 @@ static void runFaultChecks(unsigned long now) {
   if (!windowConstant) lastNonConstantTime = now;
 
   if (now - lastNonZeroSampleTime > MIC_STUCK_WARN_MS && !zeroSampleWarned) {
-    Serial.println(F("[MIC] WARN: samples have been exactly zero for several seconds"));
-    Serial.println(F("[MIC] HINT: try the other I2S channel slot (LEFT vs RIGHT)"));
+    if (audioLogEnabled) {
+      Serial.println(F("[MIC] WARN: samples have been exactly zero for several seconds"));
+      Serial.println(F("[MIC] HINT: try the other I2S channel slot (LEFT vs RIGHT)"));
+    }
     zeroSampleWarned = true;
   }
   if (now - lastNonConstantTime > MIC_STUCK_WARN_MS && !stuckWarned) {
-    Serial.println(F("[MIC] WARN: raw samples appear constant/stuck for several seconds"));
+    if (audioLogEnabled) Serial.println(F("[MIC] WARN: raw samples appear constant/stuck for several seconds"));
     stuckWarned = true;
   }
   if (now - lastNonSaturatedTime > MIC_STUCK_WARN_MS && !saturatedWarned) {
-    Serial.println(F("[MIC] WARN: samples appear saturated (clipping) for several seconds"));
+    if (audioLogEnabled) Serial.println(F("[MIC] WARN: samples appear saturated (clipping) for several seconds"));
     saturatedWarned = true;
   }
 }
@@ -201,6 +214,9 @@ static void computeFeatures(unsigned long now, float dtSeconds) {
   } else {
     double meanSquare = (double)sumSquaresCorrected / (double)sampleCount;
     features.rms = (float)sqrt(meanSquare);
+    // BEGIN HARDWARE TEST SUPPORT -- see AudioFeatures::peak in AudioAnalyzer.h
+    features.peak = (float)peakCorrected;
+    // END HARDWARE TEST SUPPORT
 
     double bassMeanSquare = (double)bassSumSquares / (double)sampleCount;
     float bassRms = (float)sqrt(bassMeanSquare);
@@ -261,10 +277,14 @@ void updateAudioAnalyzer() {
   resetWindow(now);
 
   if (now - lastHeartbeatPrint >= AUDIO_DIAG_PRINT_INTERVAL_MS) {
+    // Timer keeps ticking regardless of the log toggle, so re-enabling
+    // logging later doesn't immediately fire a burst from a stale timestamp.
     lastHeartbeatPrint = now;
-    Serial.printf("[AUDIO] rms=%.0f norm=%.2f env=%.2f floor=%.0f bass=%.2f clap=%d transient=%d\n",
-                  features.rms, features.normalized, features.envelope, noiseFloorEstimate,
-                  features.lowFrequencyEnergy, features.clap ? 1 : 0, features.transient ? 1 : 0);
+    if (audioLogEnabled) {
+      Serial.printf("[AUDIO] rms=%.0f norm=%.2f env=%.2f floor=%.0f bass=%.2f clap=%d transient=%d\n",
+                    features.rms, features.normalized, features.envelope, noiseFloorEstimate,
+                    features.lowFrequencyEnergy, features.clap ? 1 : 0, features.transient ? 1 : 0);
+    }
   }
 }
 

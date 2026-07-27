@@ -11,6 +11,7 @@
 #include "VisualCue.h"
 #include "MotorBehavior.h"
 #include "MotorDriver.h"
+#include "MotorPowerGuard.h"
 
 // Temporary test-only serial interface for MotorBehavior (Task 5 of the
 // motor bring-up plan, see docs/DRV8833_MOTOR_BRINGUP.md section 13). Set
@@ -98,6 +99,7 @@ void setup() {
   // MotorBehavior starts in OFF (motor stopped) and is never auto-enabled
   // here -- IDLE_SWAY must be explicitly selected (see
   // ENABLE_MOTOR_BEHAVIOR_TEST commands below).
+  initMotorPowerGuard();
   initMotorBehavior();
 #if ENABLE_MOTOR_BEHAVIOR_TEST
   Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
@@ -174,6 +176,7 @@ void loop() {
 #if ENABLE_MOTOR_BEHAVIOR_TEST
   pollMotorBehaviorTestCommands();
 #endif
+  updateMotorPowerGuard();  // non-blocking; must tick every iteration regardless of MotorBehavior mode
   updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons + serial, non-blocking
   updateAudioAnalyzer();  // I2S capture + AudioFeatures; runs every iteration regardless of mute/frame pacing

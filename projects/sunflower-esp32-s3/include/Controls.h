@@ -26,6 +26,12 @@ AudioOverlay getCurrentAudioOverlay();
 AudioOverlay getSelectedOverlayMode();
 bool isAudioOverlayEnabled();
 bool isMuted();
+
+// Exported setter for MotorPowerGuard (see include/MotorPowerGuard.h) --
+// saves/forces/restores mute state around motor engagement. Idempotent:
+// no-op if already at the requested value. Does not touch brightness,
+// base effect, or overlay selection.
+void setMuted(bool value);
 uint8_t getBrightnessIndex();
 uint8_t getBrightnessRaw();
 uint8_t getBrightnessPercent();

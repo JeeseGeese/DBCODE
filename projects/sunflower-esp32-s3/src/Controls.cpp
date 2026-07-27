@@ -211,6 +211,19 @@ static void toggleMute() {
   Serial.println(muted ? F("[MUTE] ON") : F("[MUTE] OFF"));
 }
 
+// Exported setter (unlike toggleMute() above, which stays file-local) --
+// added for MotorPowerGuard to save/force/restore mute state around motor
+// engagement without duplicating LED-control logic elsewhere. Same
+// underlying `muted` flag and print behavior as toggleMute(); idempotent
+// (no-op, no print) if already at the requested value. Does not touch
+// brightness, base effect, or overlay selection -- those are unaffected by
+// mute either way.
+void setMuted(bool value) {
+  if (muted == value) return;
+  muted = value;
+  Serial.println(muted ? F("[MUTE] ON") : F("[MUTE] OFF"));
+}
+
 static void brightnessUp() {
   brightnessIndex = (brightnessIndex + 1) % NUM_BRIGHTNESS_LEVELS;
   Serial.printf("[BRIGHTNESS] %d%% | raw=%d\n", BRIGHTNESS_PERCENTS[brightnessIndex], BRIGHTNESS_RAW[brightnessIndex]);

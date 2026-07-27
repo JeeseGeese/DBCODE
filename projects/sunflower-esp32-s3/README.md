@@ -75,10 +75,22 @@ pio device monitor -p /dev/ttyACM0 -b 115200
 
 ## Motor driver (DRV8833)
 
-**STATUS: HARDWARE BRING-UP COMPLETE.** Full bring-up history (failed PWM
-characterization, digital isolation test, electrical diagnostic, final
-validation, measured facts vs. hypotheses) is in
+**STATUS: IDLE_SWAY PHYSICALLY VALIDATED WITH LED POWER LIMITATION.** Full
+bring-up and validation history (failed PWM characterization, digital
+isolation test, electrical diagnostic, final hardware validation, IDLE_SWAY
+physical validation, measured facts vs. hypotheses) is in
 [`docs/DRV8833_MOTOR_BRINGUP.md`](../../docs/DRV8833_MOTOR_BRINGUP.md).
+
+**IDLE_SWAY physical validation:** forward/reverse 120ms pulses both move
+the motor correctly, stop is clean, `k` emergency-stops immediately.
+Motor engagement visibly disturbs LED output (not audio pickup), and motor
+movement is reliable with LEDs muted but inconsistent/weak while LEDs are
+active — this is correlated with shared-supply power contention, **not**
+a MotorBehavior timing or direction-control defect (no exact voltage sag
+was measured; see the doc above for the full writeup). A temporary
+`MotorPowerGuard` bench-development workaround (below) mutes LEDs around
+motor engagement so software work on both can continue — it is **not** a
+substitute for a dedicated motor power supply.
 
 **Verified wiring** (J2-bridged DRV8833 board):
 
@@ -123,6 +135,7 @@ void setMotorBehavior(MotorBehaviorMode m);   // always stops the motor first
 MotorBehaviorMode getMotorBehavior();
 void updateMotorBehavior();                   // call every loop() iteration
 void stopMotorBehavior();                     // immediate stop, forces OFF
+void printMotorBehaviorDebugState();          // mode/phase + MotorPowerGuard state, for '?'
 ```
 
 - Starts in `OFF` after boot. **Not** auto-enabled — a mode must be
@@ -136,25 +149,67 @@ void stopMotorBehavior();                     // immediate stop, forces OFF
   which behavior is active or what its own timing logic does — a backstop,
   not the primary timing mechanism.
 
-**IDLE_SWAY** (the only implemented behavior) — conservative, fully
-non-blocking, no `delay()`:
+**IDLE_SWAY** (the only implemented behavior, physically validated) —
+conservative, fully non-blocking, no `delay()`:
 
 ```
-Forward 120ms -> Stop 700ms -> Reverse 120ms -> Stop 1200ms -> repeat
+Request power -> [wait] -> Forward 120ms -> Stop -> Release power
+  -> Stop 700ms
+  -> Request power -> [wait] -> Reverse 120ms -> Stop -> Release power
+  -> Stop 1200ms -> repeat
 ```
 
-The motor always passes through a stop segment between forward and
-reverse — no direct forward-to-reverse transition.
+The physical timing (120ms pulses, 700ms/1200ms rests) is unchanged from
+the original design — each pulse is now preceded by a `MotorPowerGuard`
+request/ready wait (up to 50ms, see below), which is *not* counted as
+part of the 120ms pulse. The motor always passes through a stop segment
+between forward and reverse — no direct forward-to-reverse transition.
+
+### MotorPowerGuard — temporary bench-development workaround (`include/MotorPowerGuard.h` / `src/MotorPowerGuard.cpp`)
+
+**Not a production fix.** The DRV8833 currently shares the ESP32's power
+supply with the LED strip, and motor engagement visibly disturbs LED
+output (see the physical validation note above). This module coordinates
+the two so software development on both can continue: it mutes the LEDs
+immediately before the motor engages and restores them shortly after it
+stops. Non-blocking, `millis()`-based, gated by
+`ENABLE_MOTOR_LED_POWER_GUARD` (set to 0 to disable — `isMotorPowerReady()`
+then always returns true immediately and no muting/restoring happens).
+
+```cpp
+enum class MotorPowerGuardState { IDLE, PREPARING, READY, RELEASING };
+
+void initMotorPowerGuard();
+void requestMotorPower();            // saves + forces LED mute, starts 50ms settle
+bool isMotorPowerReady();            // true once the 50ms delay has elapsed
+void releaseMotorPower();            // starts 100ms settle, then restores LED state
+void releaseMotorPowerImmediately(); // bypasses the 100ms delay (emergency stop, mode change)
+void updateMotorPowerGuard();        // call every loop() iteration, regardless of MotorBehavior mode
+```
+
+- Uses only `Controls.h`'s central `isMuted()`/`setMuted()` LED-mute API —
+  never touches the NeoPixel object, brightness, base effect, or
+  audio-overlay state directly, and duplicates no LED-control logic.
+  `setMuted(bool)` was added as a minimal, additive export alongside the
+  existing `isMuted()`; `toggleMute()`, the button state machine, and
+  everything else in `Controls.cpp` are unchanged.
+- The motor never energizes before `isMotorPowerReady()` returns true.
+- Repeated `requestMotorPower()` calls within one PREPARING/READY cycle
+  never re-save or overwrite the originally-captured mute state — so if
+  LEDs were already manually muted before the motor requested power, they
+  stay muted afterward; if they weren't, they're restored to unmuted.
+- Emergency stop (`k`) and any `MotorBehavior` mode change call
+  `releaseMotorPowerImmediately()`, so LEDs can never be left stuck muted.
 
 ### Serial commands
 
 | Command | Action |
 |---|---|
 | `f` | `MotorDriver` forward (continuous, fires immediately, no Enter needed) |
-| `k` | Immediate stop — both raw `MotorDriver` hold and any active `MotorBehavior` (forces mode to `OFF`) |
-| `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* |
+| `k` | Immediate stop — both raw `MotorDriver` hold and any active `MotorBehavior` (forces mode to `OFF`), and immediately releases/restores `MotorPowerGuard` |
+| `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* — also releases `MotorPowerGuard` immediately |
 | `1` | `MotorBehavior` IDLE_SWAY *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `?` | Print current `MotorBehavior` mode + internal phase/timing *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `?` | Print `MotorBehavior` mode/phase plus `MotorPowerGuard` enabled state, guard state, whether a previous LED state is saved, and whether LEDs were already manually muted before the request *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
 These fire on the single byte, unlike the Enter-terminated commands in
 [Serial controls](#serial-controls) below. They're implemented as a
@@ -186,6 +241,9 @@ for motor-stop (as originally planned) because it's the first letter of
   hypothesis, not a proven one).
 - `motorBrake()` is implemented and was electrically validated during
   bring-up but is not yet used by any behavior.
+- Motor engagement visibly disturbs LED output while both share the
+  current power supply; `MotorPowerGuard` (above) is a bench-development
+  workaround, not a fix — see Power below.
 
 ### Power
 
@@ -196,6 +254,13 @@ production use, evaluate a dedicated external motor supply (sized for the
 motor's actual current draw, including startup inrush) with a common
 ground shared with the ESP32 — see
 [Safety warnings](#safety-warnings) below.
+
+`MotorPowerGuard`'s LED muting is a **temporary software workaround** for
+continued bench development, not a power fix — it reduces LED current
+draw during motor engagement but does not increase available current or
+address the underlying shared-supply contention. See
+`docs/DRV8833_MOTOR_BRINGUP.md` section 14 for the physical validation
+that identified this contention.
 
 ## Architecture: base effects vs. audio overlays
 
@@ -718,3 +783,8 @@ All constants below are in `include/Config.h`.
   [Motor driver (DRV8833)](#motor-driver-drv8833) above); evaluate a
   dedicated external motor supply with common ground before any
   sustained or production use.
+- Physical validation confirmed motor engagement visibly disturbs LED
+  output while the two share this supply (motor movement is reliable
+  with LEDs muted, inconsistent/weak while LEDs are active). The
+  `MotorPowerGuard` LED-muting workaround reduces this contention for
+  bench development; it is not a power fix.

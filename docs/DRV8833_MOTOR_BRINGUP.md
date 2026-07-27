@@ -1,6 +1,6 @@
 # DRV8833 Motor Bring-Up — Sunflower ESP32-S3
 
-**STATUS: HARDWARE BRING-UP COMPLETE**
+**STATUS: IDLE_SWAY PHYSICALLY VALIDATED WITH LED POWER LIMITATION**
 
 ## 1. Objective
 
@@ -274,3 +274,80 @@ control to programmed motor **behaviors**, layered strictly on top of
 - Audio-reactive motor behavior is an intended future direction; the
   `MotorBehaviorMode` enum and `updateMotorBehavior()` structure are
   designed to leave room for it without a redesign.
+
+## 14. IDLE_SWAY physical validation
+
+Timing tested: Forward 120ms → Stop 700ms → Reverse 120ms → Stop 1200ms.
+
+**Observed:**
+
+- Forward 120ms starts and moves successfully.
+- Reverse 120ms starts and moves successfully.
+- Visible movement occurs in both directions.
+- The motor buzzes briefly when engaging.
+- The motor stops cleanly.
+- Serial emergency-stop command `k` stops it immediately.
+- The motor causes the LEDs to visibly pulse when it engages.
+- The LED pulse is not caused by microphone/audio pickup.
+- Motor movement becomes inconsistent or weak while the LEDs are active.
+- Motor movement is reliable when the LEDs are muted.
+
+**Engineering conclusion:**
+
+> IDLE_SWAY has passed physical direction, timing, stop, and
+> emergency-stop validation. The motor, DRV8833 control path,
+> MotorDriver, and MotorBehavior state machine are functioning
+> correctly. The remaining instability is correlated with LED power
+> consumption: the motor moves reliably with the LEDs muted but
+> struggles while the LEDs are active, and motor engagement visibly
+> disturbs LED output. This strongly indicates shared-supply power
+> contention, voltage sag, or insufficient current headroom. It is not
+> evidence of a MotorBehavior timing or direction-control defect.
+
+No exact voltage sag was measured during this validation — the above is
+based on the correlation between LED activity and motor reliability, not
+an instrumented voltage reading.
+
+**Recommendation:** the final hardware configuration should use a
+dedicated motor power supply with a common ground, separate from the LED
+strip's supply path, to eliminate this contention entirely. The
+`MotorPowerGuard` module described in section 15 is a **temporary
+bench-development workaround** — it lets software work on both LEDs and
+motor behavior continue in the meantime by muting LEDs immediately before
+the motor engages, but it does not increase available current and is not
+a substitute for adequate, separate power.
+
+## 15. MotorPowerGuard (temporary bench-development workaround)
+
+`include/MotorPowerGuard.h` / `src/MotorPowerGuard.cpp` — coordinates LED
+muting with motor engagement so the two stop fighting over the shared
+power supply during continued software development. Non-blocking,
+`millis()`-based, gated by `ENABLE_MOTOR_LED_POWER_GUARD` (set to 0 to
+disable entirely).
+
+```cpp
+enum class MotorPowerGuardState { IDLE, PREPARING, READY, RELEASING };
+
+void initMotorPowerGuard();
+void requestMotorPower();          // saves + forces LED mute, starts 50ms settle
+bool isMotorPowerReady();          // true once the 50ms delay has elapsed
+void releaseMotorPower();          // starts 100ms settle, then restores LED state
+void releaseMotorPowerImmediately(); // bypasses the 100ms delay (emergency stop, mode change)
+void updateMotorPowerGuard();      // call every loop() iteration
+```
+
+Uses only `Controls.h`'s central `isMuted()`/`setMuted()` LED-mute API
+(the latter added as a minimal, additive export alongside the existing
+`isMuted()` — `toggleMute()` itself, the button state machine, and all
+other `Controls.cpp` logic are unchanged). Never touches the NeoPixel
+object, brightness, base effect, or audio-overlay state directly, and
+duplicates no LED-control logic.
+
+`IDLE_SWAY` was restructured to request power before each energized
+segment and release it immediately after, without changing its physical
+timing: the 120ms forward/reverse pulses and 700ms/1200ms rest intervals
+are unchanged: the new power-request/ready wait (up to 50ms) happens
+*before* each 120ms pulse starts, not counted as part of it.
+
+This module must not be treated as the final production power
+architecture — see section 14's recommendation.

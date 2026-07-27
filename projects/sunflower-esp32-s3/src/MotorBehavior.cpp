@@ -3,26 +3,34 @@
 #include <Arduino.h>
 
 #include "MotorDriver.h"
+#include "MotorPowerGuard.h"
 
 namespace {
 
 MotorBehaviorMode currentMode = MotorBehaviorMode::OFF;
 
-// IDLE_SWAY timing -- conservative first pass. See
+// IDLE_SWAY timing -- conservative first pass, physically validated. See
 // docs/DRV8833_MOTOR_BRINGUP.md section 13.
 constexpr uint32_t IDLE_SWAY_FORWARD_MS = 120;
 constexpr uint32_t IDLE_SWAY_STOP_AFTER_FORWARD_MS = 700;
 constexpr uint32_t IDLE_SWAY_REVERSE_MS = 120;
 constexpr uint32_t IDLE_SWAY_STOP_AFTER_REVERSE_MS = 1200;
 
+// REQUEST_POWER_* phases wait on MotorPowerGuard's isMotorPowerReady()
+// before energizing -- their own wait time (up to the guard's 50ms
+// prepare delay) is NOT counted as part of the 120ms FORWARD/REVERSE
+// pulse, since phaseStartMs is reset fresh when each of those phases is
+// entered.
 enum class IdleSwayPhase {
+  REQUEST_POWER_FORWARD,
   FORWARD,
   STOP_AFTER_FORWARD,
+  REQUEST_POWER_REVERSE,
   REVERSE,
   STOP_AFTER_REVERSE,
 };
 
-IdleSwayPhase idleSwayPhase = IdleSwayPhase::STOP_AFTER_REVERSE;
+IdleSwayPhase idleSwayPhase = IdleSwayPhase::REQUEST_POWER_FORWARD;
 unsigned long phaseStartMs = 0;
 
 // Generic safety net, independent of any individual behavior's own state
@@ -53,31 +61,49 @@ void enforceMaxRuntime(unsigned long now) {
   if (energizedSinceMs != 0 && (now - energizedSinceMs) >= MAX_ENERGIZED_MS) {
     Serial.println(F("[MOTOR BEHAVIOR] Safety: max energized runtime exceeded -- forcing stop"));
     behaviorStop();
+    releaseMotorPowerImmediately();
   }
 }
 
+// Kicks off a fresh IDLE_SWAY cycle at its very first step: request power,
+// then wait for isMotorPowerReady() before driving forward.
 void enterIdleSway(unsigned long now) {
-  idleSwayPhase = IdleSwayPhase::FORWARD;
+  idleSwayPhase = IdleSwayPhase::REQUEST_POWER_FORWARD;
   phaseStartMs = now;
-  behaviorForward();
+  requestMotorPower();
 }
 
 // STOP_AFTER_FORWARD and STOP_AFTER_REVERSE are separate phases (not one
 // shared "stopped" phase) so forward and reverse can never become directly
 // adjacent -- each direction change always passes through its own bounded
-// stop segment first.
+// stop segment, plus a REQUEST_POWER_* phase, before the next direction.
 void updateIdleSway(unsigned long now) {
   unsigned long elapsed = now - phaseStartMs;
   switch (idleSwayPhase) {
+    case IdleSwayPhase::REQUEST_POWER_FORWARD:
+      if (isMotorPowerReady()) {
+        behaviorForward();
+        idleSwayPhase = IdleSwayPhase::FORWARD;
+        phaseStartMs = now;
+      }
+      break;
     case IdleSwayPhase::FORWARD:
       if (elapsed >= IDLE_SWAY_FORWARD_MS) {
         behaviorStop();
+        releaseMotorPower();
         idleSwayPhase = IdleSwayPhase::STOP_AFTER_FORWARD;
         phaseStartMs = now;
       }
       break;
     case IdleSwayPhase::STOP_AFTER_FORWARD:
       if (elapsed >= IDLE_SWAY_STOP_AFTER_FORWARD_MS) {
+        idleSwayPhase = IdleSwayPhase::REQUEST_POWER_REVERSE;
+        phaseStartMs = now;
+        requestMotorPower();
+      }
+      break;
+    case IdleSwayPhase::REQUEST_POWER_REVERSE:
+      if (isMotorPowerReady()) {
         behaviorReverse();
         idleSwayPhase = IdleSwayPhase::REVERSE;
         phaseStartMs = now;
@@ -86,15 +112,16 @@ void updateIdleSway(unsigned long now) {
     case IdleSwayPhase::REVERSE:
       if (elapsed >= IDLE_SWAY_REVERSE_MS) {
         behaviorStop();
+        releaseMotorPower();
         idleSwayPhase = IdleSwayPhase::STOP_AFTER_REVERSE;
         phaseStartMs = now;
       }
       break;
     case IdleSwayPhase::STOP_AFTER_REVERSE:
       if (elapsed >= IDLE_SWAY_STOP_AFTER_REVERSE_MS) {
-        behaviorForward();
-        idleSwayPhase = IdleSwayPhase::FORWARD;
+        idleSwayPhase = IdleSwayPhase::REQUEST_POWER_FORWARD;
         phaseStartMs = now;
+        requestMotorPower();
       }
       break;
   }
@@ -115,10 +142,22 @@ const char *modeName(MotorBehaviorMode mode) {
 
 const char *idleSwayPhaseName(IdleSwayPhase phase) {
   switch (phase) {
+    case IdleSwayPhase::REQUEST_POWER_FORWARD: return "REQUEST_POWER_FORWARD";
     case IdleSwayPhase::FORWARD: return "FORWARD";
     case IdleSwayPhase::STOP_AFTER_FORWARD: return "STOP_AFTER_FORWARD";
+    case IdleSwayPhase::REQUEST_POWER_REVERSE: return "REQUEST_POWER_REVERSE";
     case IdleSwayPhase::REVERSE: return "REVERSE";
     case IdleSwayPhase::STOP_AFTER_REVERSE: return "STOP_AFTER_REVERSE";
+  }
+  return "UNKNOWN";
+}
+
+const char *powerGuardStateName(MotorPowerGuardState s) {
+  switch (s) {
+    case MotorPowerGuardState::IDLE: return "IDLE";
+    case MotorPowerGuardState::PREPARING: return "PREPARING";
+    case MotorPowerGuardState::READY: return "READY";
+    case MotorPowerGuardState::RELEASING: return "RELEASING";
   }
   return "UNKNOWN";
 }
@@ -127,7 +166,7 @@ const char *idleSwayPhaseName(IdleSwayPhase phase) {
 
 void initMotorBehavior() {
   currentMode = MotorBehaviorMode::OFF;
-  idleSwayPhase = IdleSwayPhase::STOP_AFTER_REVERSE;
+  idleSwayPhase = IdleSwayPhase::REQUEST_POWER_FORWARD;
   phaseStartMs = 0;
   behaviorStop();
   gentleNodNoticePrinted = false;
@@ -135,8 +174,11 @@ void initMotorBehavior() {
 }
 
 void setMotorBehavior(MotorBehaviorMode mode) {
-  // Always stop first, regardless of current or new mode.
+  // Always stop first, regardless of current or new mode, and release the
+  // power guard immediately (not the normal 100ms-delayed path) so a mode
+  // change can never leave LEDs stuck muted.
   behaviorStop();
+  releaseMotorPowerImmediately();
   currentMode = mode;
 
   switch (mode) {
@@ -179,6 +221,7 @@ void updateMotorBehavior() {
 
 void stopMotorBehavior() {
   behaviorStop();
+  releaseMotorPowerImmediately();
   currentMode = MotorBehaviorMode::OFF;
 }
 
@@ -189,4 +232,7 @@ void printMotorBehaviorDebugState() {
                   (unsigned long)(millis() - phaseStartMs));
   }
   Serial.println();
+  Serial.printf("[MOTOR BEHAVIOR] PowerGuard: enabled=%d state=%s savedLedState=%d ledWasManuallyMuted=%d\n",
+                ENABLE_MOTOR_LED_POWER_GUARD, powerGuardStateName(getMotorPowerGuardState()),
+                isPreviousLedStateSaved() ? 1 : 0, wasLedManuallyMutedBeforeRequest() ? 1 : 0);
 }

@@ -75,11 +75,20 @@ pio device monitor -p /dev/ttyACM0 -b 115200
 
 ## Motor driver (DRV8833)
 
-**STATUS: IDLE_SWAY PHYSICALLY VALIDATED WITH LED POWER LIMITATION.** Full
-bring-up and validation history (failed PWM characterization, digital
-isolation test, electrical diagnostic, final hardware validation, IDLE_SWAY
-physical validation, measured facts vs. hypotheses) is in
-[`docs/DRV8833_MOTOR_BRINGUP.md`](../../docs/DRV8833_MOTOR_BRINGUP.md).
+**STATUS: MOTOR STARTUP ROOT CAUSE CONFIRMED AND PHYSICALLY FIXED (MECHANICAL) — PHYSICAL PASS.**
+The motor startup failure was mechanically caused by excessive and uneven
+belt loading. The original belt was oblong and/or overly tight, producing
+excessive breakaway resistance. Replacing it with a more uniform belt with
+slightly greater slack restored motor movement. The motor, DRV8833, GPIO
+control, and non-blocking firmware were functional throughout — software
+timing changes did not correct the mechanical preload problem. Longer-
+duration reliability testing (sustained/repeated operation over time) is
+still recommended. Full bring-up and validation history (failed PWM
+characterization, digital isolation test, electrical diagnostic, final
+hardware validation, IDLE_SWAY physical validation, measured facts vs.
+hypotheses, and the confirmed root cause) is in
+[`docs/DRV8833_MOTOR_BRINGUP.md`](../../docs/DRV8833_MOTOR_BRINGUP.md)
+(see section 20 for the root-cause writeup).
 
 **IDLE_SWAY physical validation:** forward/reverse 120ms pulses both move
 the motor correctly, stop is clean, `k` emergency-stops immediately.
@@ -117,6 +126,14 @@ of the output gear does let it start, pointing toward static friction,
 gearbox position sensitivity, or insufficient breakaway torque rather
 than remaining electrical/software causes. `MotorPriorityMode`'s `3`
 test attempts to reproduce that flick in software — see below.
+
+**Root cause (confirmed, closed):** the belt driving the mechanism was
+oblong and/or overly tight, producing excessive and uneven breakaway
+resistance — mechanical, not electrical or software. Replacing it with a
+more uniform belt with slightly more slack restored motor movement. None
+of the pulse-duration tuning, the `2` boot-equivalent test, or the `3`
+breakaway test were the fix; they remain useful diagnostic history and
+bench tooling. See `docs/DRV8833_MOTOR_BRINGUP.md` section 20.
 
 **Verified wiring** (J2-bridged DRV8833 board):
 
@@ -314,17 +331,51 @@ pulse further.** Do not touch or flick the gear while the motor is
 energized during this test — it exists specifically to determine whether
 software alone can reproduce the effect of a manual flick.
 
+### 42-LED assembly and experimental motor+LED coexistence testing
+
+A 42-LED WS2812 assembly (3 daisy-chained rows: Row 1 = 10, Row 2 = 10,
+Row 3 = 22) has been physically connected on the same GPIO4/strip object
+as the existing `NUM_LEDS=58` strip, and **has been observed working
+correctly with the existing firmware as-is** — no code changes were
+required for current modes/effects/brightness/mute to display properly on
+it. `NUM_LEDS` was therefore deliberately left at 58; see
+`docs/DRV8833_MOTOR_BRINGUP.md` section 21 for the full writeup, including
+why driving more logical pixels than are physically present is safe.
+
+Row layout is recorded as lightweight metadata in `include/Config.h`
+(`LedRegion LED_ROW_1/2/3`, `PHYSICAL_LED_COUNT = 42`, plus boundary
+`static_assert`s) — it does not create a second NeoPixel object or alter
+any effect's output by itself.
+
+`MotorPowerGuard` gained an experimental `MotorLedPowerMode` alongside its
+existing (default, unchanged) `FULL_MUTE` behavior:
+
+```cpp
+enum class MotorLedPowerMode { FULL_MUTE, DIM_DURING_MOTION };
+```
+
+`DIM_DURING_MOTION` is used only by the `5` test command below — `2`/`3`
+always use `FULL_MUTE`. When active, the current base effect keeps
+animating normally (not frozen, not replaced), the audio overlay is
+suspended, and brightness ramps (300ms, non-blocking) down to a selectable
+low test level for the motor's duration, then back up. `Controls.cpp`'s
+brightness index, mute, base effect, and overlay selection are never
+touched, so they're preserved automatically with no separate restore step.
+
 ### Serial commands
 
 | Command | Action |
 |---|---|
 | `f` | `MotorDriver` forward (continuous, fires immediately, no Enter needed) |
-| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority test/breakaway test; releases/restores `MotorPowerGuard` |
+| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority/breakaway/motor+LED/row test; releases/restores `MotorPowerGuard` |
 | `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* — also releases `MotorPowerGuard` immediately |
 | `1` | `MotorBehavior` IDLE_SWAY *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `2` | Boot-equivalent `MotorPriorityMode` runtime test (Preparing → Forward 250ms → Stop 250ms → Reverse 250ms → Stop → release → back to `MotorBehavior` OFF) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `3` | Aggressive breakaway test: jolt + 1500ms full drive, 2 cycles (see MOTOR BREAKAWAY above) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard` state, `MotorPriorityMode` state + LED/audio-suspended flags, the priority test's phase, and the breakaway test's active/phase/cycle/elapsed *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `4` | Cycle the experimental `DIM_DURING_MOTION` test brightness level: `0, 4, 8, 12, 16` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `6` | Optional LED row-identification test: Row 1 dim red 1s → off → Row 2 dim green 1s → off → Row 3 dim blue 1s → off → all 42 dim white ≤500ms → off. Row mapping is **not** claimed as physically confirmed — visually verify *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard`/`MotorLedPowerMode` state, `MotorPriorityMode` state + LED/audio-suspended flags, and the priority/breakaway/motor+LED/row tests' active/phase state *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
 These fire on the single byte, unlike the Enter-terminated commands in
 [Serial controls](#serial-controls) below. They're implemented as a
@@ -336,8 +387,8 @@ any existing single-char or word command (`n,p,o,x,+,-,m,d,h,g,r,b,a,c,v`,
 originally planned, both to avoid stealing bytes from existing commands:
 `s` → `k` for motor-stop (`s` is the first letter of `status`), and `p` →
 `2` for the boot-equivalent test (`p` is Controls.cpp's existing
-"previous base effect" command). `3` (breakaway test) was checked against
-the full command map and has no collision.
+"previous base effect" command). `3`/`4`/`5`/`6` were each checked against
+the full command map and have no collision.
 
 ### Safety behavior
 

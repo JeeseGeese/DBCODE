@@ -1,6 +1,6 @@
 # DRV8833 Motor Bring-Up — Sunflower ESP32-S3
 
-**STATUS: IDLE_SWAY PHYSICALLY VALIDATED WITH LED POWER LIMITATION**
+**STATUS: MOTOR STARTUP ROOT CAUSE CONFIRMED AND PHYSICALLY FIXED (MECHANICAL) — MOTOR BRING-UP: PHYSICAL PASS**
 
 ## 1. Objective
 
@@ -589,3 +589,102 @@ though it should never trigger given the timing above).
 
 Physical result of this test has not yet been confirmed -- pending
 observation.
+
+## 20. Confirmed root cause: mechanical belt preload (CLOSED)
+
+The motor startup failure was mechanically caused by excessive and uneven
+belt loading. The original belt was oblong and/or overly tight, producing
+excessive breakaway resistance. Replacing it with a more uniform belt with
+slightly greater slack restored motor movement. The motor, DRV8833, GPIO
+control, and non-blocking firmware were functional. Software timing
+changes did not correct the mechanical preload problem.
+
+This closes the investigation across sections 3-19 above: the
+electrical/GPIO path, the DRV8833 driver, and the non-blocking firmware
+were never the problem, and none of the pulse-duration increases (120ms,
+300ms, 500ms), the boot-equivalent runtime priority test (`2`), or the
+jolt+long-pulse breakaway test (`3`) were the fix. All of that work
+remains useful diagnostic history and reusable test infrastructure (`2`
+and `3` still function as bench diagnostics), but it should not be read as
+having been the cause or the fix -- the belt was.
+
+**Motor bring-up status: physical PASS.** The mechanical fix has been
+verified to restore motor movement. Longer-duration reliability testing
+(sustained/repeated operation over time, under normal LED/audio load) is
+still recommended before treating the motor as fully production-validated
+-- this closes the *startup* investigation specifically, not a full
+reliability sign-off.
+
+## 21. 42-LED assembly and experimental motor+LED coexistence testing
+
+A 42-LED WS2812 assembly (3 daisy-chained rows: Row 1 = 10, Row 2 = 10,
+Row 3 = 22) has been physically connected on the same GPIO4/strip object
+as the existing `NUM_LEDS=58` strip. **It has been observed working
+correctly with the existing firmware as-is** -- current modes, effects,
+brightness, and mute behavior all display properly with no indexing
+failure, missing section, corrupted color data, or effect malfunction.
+
+Per that observation, `NUM_LEDS` was deliberately left at 58, unchanged.
+Whether the physically connected chain is exactly 42, exactly 58, or
+something else has not been independently confirmed from the repository
+-- but driving more logical pixels than are physically present is
+standard, harmless WS2812 behavior (surplus data simply has no LED left in
+the chain to land on), so there is no evidence the existing configuration
+is unsafe or needs to change.
+
+**Row metadata (see `include/Config.h`):**
+
+```cpp
+struct LedRegion { uint16_t start; uint16_t count; };
+constexpr LedRegion LED_ROW_1{0, 10};
+constexpr LedRegion LED_ROW_2{10, 10};
+constexpr LedRegion LED_ROW_3{20, 22};
+constexpr uint16_t PHYSICAL_LED_COUNT = 42;
+```
+
+These are metadata only (plus three `static_assert`s validating the
+boundaries and that `PHYSICAL_LED_COUNT <= NUM_LEDS`) -- they do not
+create a second NeoPixel object, do not replace the existing LED driver,
+and do not change any effect's output by themselves.
+
+**Optional row-identification test (serial `6`):** lights Row 1 (dim red,
+1s), Row 2 (dim green, 1s), Row 3 (dim blue, 1s), then all 42 (dim white,
+500ms), each separated by an off gap, writing directly to the existing
+`strip` object (never a second NeoPixel instance). Cancelable at any point
+via `k`. This confirms only that each phase was *commanded* -- physical
+row-to-LED mapping must be visually verified by the user, not assumed from
+this test having run.
+
+**Experimental motor+LED coexistence (`MotorLedPowerMode`, see
+`include/MotorPowerGuard.h`):** `MotorPowerGuard`'s existing `FULL_MUTE`
+behavior (mute LEDs entirely during motor engagement) remains the default
+and is unchanged. A new `DIM_DURING_MOTION` mode is available, used only
+by the dedicated `5` test command -- normal motor commands (`2`/`3`) never
+select it. When active: the currently-selected base effect keeps
+animating normally (not frozen, not replaced with a static color); only
+the audio overlay is suspended (the highest-current, least predictable
+component); overall brightness is ramped (300ms, non-blocking) down to a
+low test level before the motor engages, held for the motor's duration,
+then ramped back up after the existing release settle delay. Brightness
+index, mute state, base effect, and overlay selection in `Controls.cpp`
+are never touched, so they are preserved automatically -- there is no
+separate restore step to get wrong. Emergency stop
+(`releaseMotorPowerImmediately()`) skips the ramp and restores instantly.
+
+Test brightness is selectable among a fixed, capped set --
+`{0, 4, 8, 12, 16}` out of 255 -- cycled via serial `4`; the diagnostic
+does not go above 16 until physical testing at these levels has been
+reviewed. `5` runs one forward + one reverse movement (250ms each,
+matching the proven boot/priority-test timing, well under the 2000ms
+max-energized safeguard) at the currently selected level.
+
+**Not yet physically validated:** whether LEDs stay visually stable at any
+of these levels while the motor runs, whether the motor is affected by
+running the LEDs concurrently, and whether any brightness level in the set
+causes flicker, brownout, ESP32 reset, or audio instability. Sparse
+colored effects and this diagnostic's low test levels are the
+lowest-current-risk starting point; full-strip white and bright
+audio-reactive flashes (lightning, claps) are the highest-risk condition
+and are not exercised by this diagnostic. Success at a low brightness
+during this test does not by itself prove any effect is safe at full
+brightness while the motor runs.

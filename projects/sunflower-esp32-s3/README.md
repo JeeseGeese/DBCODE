@@ -94,9 +94,14 @@ substitute for a dedicated motor power supply.
 
 **Pulse-duration calibration (in progress):** with `MotorPowerGuard`
 auto-muting LEDs before each pulse, 120ms pulses buzzed but did not
-produce reliable visible motion — shorter than what's needed to reliably
-move the motor even with LED contention removed. Pulse duration is now
-**300ms** (increased from 120ms) for the next physical test; rest
+produce reliable visible motion. 300ms was a **partial pass**: both
+directions moved, but forward/reverse starts succeeded only
+~80% of the time, with failed starts buzzing until manually nudged —
+inconsistent dead-stop starting persisted even with LEDs muted. Pulse
+duration is now **500ms** (increased from 300ms) as the intended final
+pulse-duration calibration test; if 500ms doesn't approach consistent
+starting, further increases stop and the remaining issue is classified
+as a motor-power/mechanical-starting limitation, not a timing one. Rest
 intervals unchanged. See `docs/DRV8833_MOTOR_BRINGUP.md` section 16.
 
 **Verified wiring** (J2-bridged DRV8833 board):
@@ -161,17 +166,21 @@ active physical calibration, see above) — conservative, fully
 non-blocking, no `delay()`:
 
 ```
-Request power -> [wait] -> Forward 300ms -> Stop -> Release power
+Request power -> [wait] -> Forward 500ms -> Stop -> Release power
   -> Stop 700ms
-  -> Request power -> [wait] -> Reverse 300ms -> Stop -> Release power
+  -> Request power -> [wait] -> Reverse 500ms -> Stop -> Release power
   -> Stop 1200ms -> repeat
 ```
 
 Pulse duration (`IDLE_SWAY_FORWARD_MS`/`IDLE_SWAY_REVERSE_MS` in
-`src/MotorBehavior.cpp`) is currently 300ms, increased from the original
-120ms after physical testing showed 120ms pulses buzzed but didn't
-reliably move the motor (see `docs/DRV8833_MOTOR_BRINGUP.md` section 16).
-Rest intervals (`IDLE_SWAY_FORWARD_REST_MS`=700,
+`src/MotorBehavior.cpp`) is currently 500ms — the intended final
+pulse-duration calibration value, after 120ms buzzed without motion and
+300ms was only a partial pass (~80% start reliability; see
+`docs/DRV8833_MOTOR_BRINGUP.md` section 16). If 500ms doesn't approach
+consistent starting, further pulse-duration increases should stop and
+the remaining issue should be classified as a motor-power or
+mechanical-starting limitation. Rest intervals
+(`IDLE_SWAY_FORWARD_REST_MS`=700,
 `IDLE_SWAY_REVERSE_REST_MS`=1200) are unchanged. Each pulse is preceded
 by a `MotorPowerGuard` request/ready wait (up to 50ms, see below), which
 is *not* counted as part of the pulse. The motor always passes through a
@@ -239,7 +248,7 @@ for motor-stop (as originally planned) because it's the first letter of
 
 - No command leaves the motor energized indefinitely by design: timed
   helpers (`motorForwardMs`/`motorReverseMs`) always stop themselves;
-  `IDLE_SWAY`'s longest energized segment is 300ms; a generic 2s
+  `IDLE_SWAY`'s longest energized segment is 500ms; a generic 2s
   max-runtime safety net backstops all behaviors regardless of mode.
 - `k` is a full emergency stop from any state (raw drive or any behavior).
 - No current-sensing or thermal-monitoring hardware exists — over-current,

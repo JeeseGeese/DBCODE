@@ -366,11 +366,34 @@ shared-supply/current-headroom hypothesis in section 14: a short pulse
 may not sustain long enough for the motor to reliably overcome static
 friction, particularly at the current 3.3V-only supply.
 
-**300ms (current value, under physical test):** `IDLE_SWAY_FORWARD_MS`
-and `IDLE_SWAY_REVERSE_MS` in `src/MotorBehavior.cpp` increased from 120
-to 300 for the next physical calibration pass. Rest intervals unchanged
-(`IDLE_SWAY_FORWARD_REST_MS`=700, `IDLE_SWAY_REVERSE_REST_MS`=1200). The
-`MotorPowerGuard` 50ms preparation delay and 100ms LED-restoration delay
-are both unchanged and are still not counted as part of the pulse.
-Physical movement at 300ms has not yet been confirmed -- pending
-observation.
+**300ms (partial physical pass):** both directions capable of moving;
+forward/reverse starts succeeded approximately 80% of the time. On
+failed starts, the motor buzzed without turning until the gear was
+lightly nudged by hand. `MotorPowerGuard` correctly muted the LEDs before
+each engagement, and the inconsistent dead-stop starting behavior
+persisted even with LEDs muted. Emergency stop remained functional
+throughout.
+
+> IDLE_SWAY at 300ms produced successful forward and reverse movement
+> approximately 80% of the time. Failed starts presented as motor
+> buzzing until the gear was lightly nudged. This is a partial physical
+> pass but does not meet the reliability requirement for autonomous
+> motion. Increasing pulse duration does not increase available starting
+> torque, but one 500ms calibration test is justified to determine
+> whether additional startup time materially improves reliability. If
+> 500ms does not approach consistent starting, further pulse-duration
+> increases should stop and the remaining issue should be classified as
+> a motor-power or mechanical-starting limitation.
+
+**500ms (current value, under physical test — intended final
+pulse-duration calibration):** `IDLE_SWAY_FORWARD_MS` and
+`IDLE_SWAY_REVERSE_MS` in `src/MotorBehavior.cpp` increased from 300 to
+500. Rest intervals unchanged (`IDLE_SWAY_FORWARD_REST_MS`=700,
+`IDLE_SWAY_REVERSE_REST_MS`=1200). The `MotorPowerGuard` 50ms preparation
+delay and 100ms LED-restoration delay are both unchanged and are still
+not counted as part of the pulse. Physical movement/reliability at 500ms
+has not yet been confirmed -- pending observation. Per the engineering
+interpretation above, if 500ms does not approach consistent starting,
+further pulse-duration increases should stop here and the remaining
+unreliability should be classified as a motor-power or
+mechanical-starting limitation rather than a timing one.

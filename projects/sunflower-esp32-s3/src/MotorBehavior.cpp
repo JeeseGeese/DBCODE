@@ -10,14 +10,16 @@ namespace {
 MotorBehaviorMode currentMode = MotorBehaviorMode::OFF;
 
 // IDLE_SWAY timing -- calibration in progress, physical testing ongoing.
-// See docs/DRV8833_MOTOR_BRINGUP.md section 14: 120ms pulses buzzed but
-// did not produce reliable visible motion under the current shared-power
-// bench configuration; 300ms is the next calibration value under physical
-// test. Named constants so future calibration passes only touch this
-// block.
-constexpr uint32_t IDLE_SWAY_FORWARD_MS = 300;
+// See docs/DRV8833_MOTOR_BRINGUP.md section 16: 120ms buzzed without
+// motion; 300ms was a partial pass (~80% start reliability, occasional
+// buzz-without-turn requiring a manual nudge). 500ms is the next and
+// intended final pulse-duration calibration value before classifying any
+// remaining unreliability as a motor-power/mechanical-starting limitation
+// rather than a timing one. Named constants so future calibration passes
+// only touch this block.
+constexpr uint32_t IDLE_SWAY_FORWARD_MS = 500;
 constexpr uint32_t IDLE_SWAY_FORWARD_REST_MS = 700;
-constexpr uint32_t IDLE_SWAY_REVERSE_MS = 300;
+constexpr uint32_t IDLE_SWAY_REVERSE_MS = 500;
 constexpr uint32_t IDLE_SWAY_REVERSE_REST_MS = 1200;
 
 // REQUEST_POWER_* phases wait on MotorPowerGuard's isMotorPowerReady()

@@ -373,7 +373,7 @@ touched, so they're preserved automatically with no separate restore step.
 | `2` | Boot-equivalent `MotorPriorityMode` runtime test (Preparing → Forward 250ms → Stop 250ms → Reverse 250ms → Stop → release → back to `MotorBehavior` OFF) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `3` | Aggressive breakaway test: jolt + 1500ms full drive, 2 cycles (see MOTOR BREAKAWAY above) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `4` | Cycle the experimental `DIM_DURING_MOTION` test brightness level: `0, 4, 8, 12, 16` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4`. **Known issue: `k` intermittently (~50%) fails to cancel this specific test** — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21; the test always self-terminates safely on its own even when `k` is missed *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `6` | Optional LED row-identification test: Row 1 dim red 1s → off → Row 2 dim green 1s → off → Row 3 dim blue 1s → off → all 42 dim white ≤500ms → off. Row mapping is **not** claimed as physically confirmed — visually verify *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard`/`MotorLedPowerMode` state, `MotorPriorityMode` state + LED/audio-suspended flags, and the priority/breakaway/motor+LED/row tests' active/phase state *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 

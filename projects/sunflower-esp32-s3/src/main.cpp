@@ -492,6 +492,22 @@ void updateBreakawayTest() {
 // directly. MotorLedTestPhase/motorLedTestPhase are forward-declared above
 // (before MOTOR PRIORITY TEST) for the same mutual-exclusion reason as
 // BreakawayPhase.
+//
+// KNOWN RELIABILITY FINDING (see docs/DRV8833_MOTOR_BRINGUP.md section 21):
+// 'k' was observed to intermittently fail to cancel this specific test
+// (~50% miss rate in isolated repeated trials, specifically during the
+// FORWARD phase) -- the LED ROW TEST ('6'), which uses the identical 'k'
+// interceptor plumbing, cancelled reliably (5/5) in the same test
+// methodology. The likely cause: this is the only test in the codebase
+// that keeps full-rate LED rendering running (strip.show() every
+// ~FRAME_INTERVAL_MS) *during* motor engagement -- every other motor test
+// mutes/suspends LEDs entirely for that window. Even when 'k' is missed,
+// this test's own bounded per-phase timing (250ms segments) always
+// self-terminates and returns everything to IDLE/FULL_MUTE on its own --
+// the motor was never observed to run away or exceed the 2000ms
+// safeguard -- but do not treat 'k' as an instantaneous guarantee for
+// THIS test until this is root-caused. Keep power/reset accessible during
+// physical testing.
 unsigned long motorLedTestPhaseStartMs = 0;
 
 void startMotorLedTest() {

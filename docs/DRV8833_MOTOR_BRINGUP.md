@@ -688,3 +688,36 @@ audio-reactive flashes (lightning, claps) are the highest-risk condition
 and are not exercised by this diagnostic. Success at a low brightness
 during this test does not by itself prove any effect is safe at full
 brightness while the motor runs.
+
+**Known reliability finding -- intermittent `k` miss during `5` (unresolved):**
+Serial validation found that `k` intermittently fails to cancel the `5`
+motor+LED coexistence test specifically (~50% miss rate across isolated,
+precisely-timed repeated trials, consistently during the `FORWARD` phase).
+The same `k` interceptor plumbing cancelled the `6` row test reliably
+(5/5) in the identical test methodology, and a temporary debug print
+confirmed that in the failing `5` trials, the `k` byte was never even seen
+by `pollMotorSerialCommands()` -- this is not a state-machine logic bug,
+the byte itself is going missing before the interceptor ever runs.
+
+The most likely explanation: `5` is the *only* test in this codebase that
+keeps full-rate LED rendering running (`strip.show()` roughly every
+`FRAME_INTERVAL_MS`=20ms) *while the motor is engaged* -- `DIM_DURING_MOTION`
+was deliberately designed this way (keep the effect animating, don't
+freeze it), unlike every other motor test (`1`/`2`/`3`), all of which mute
+or suspend LED rendering entirely for the engaged window. The working
+hypothesis is that repeated `strip.show()` calls (WS2812 timing via the
+RMT peripheral) are intermittently narrowing the window in which USB-CDC
+serial bytes get serviced, occasionally dropping one.
+
+**This has not been root-caused or fixed.** It was deliberately left
+as-is rather than papered over, per the instruction to avoid unnecessary
+LED-driver refactoring -- fixing it properly likely means either changing
+how/when rendering happens during `DIM_DURING_MOTION`, or a lower-level
+serial-buffering change, both larger than this diagnostic's scope.
+Reassuring bound: even when `k` is missed, `5`'s own per-phase timing
+(250ms segments, well under the 2000ms safeguard) always self-terminates
+and restores FULL_MUTE/IDLE on its own -- the motor was never observed to
+run away or stay energized indefinitely in any trial. Until this is
+understood, do not treat `k` as an instantaneous guarantee specifically
+for the `5` test, and keep power/reset accessible during physical testing
+of `DIM_DURING_MOTION`.

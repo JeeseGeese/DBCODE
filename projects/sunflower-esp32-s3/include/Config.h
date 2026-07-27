@@ -12,6 +12,40 @@
 #define LED_PIN 4
 #define NUM_LEDS 58
 
+// ============================================================================
+// 42-LED row assembly metadata
+// ============================================================================
+// A 42-LED WS2812 assembly (3 daisy-chained rows: 10 + 10 + 22) has been
+// physically connected on the same GPIO4/strip object as the existing
+// NUM_LEDS=58 strip above. It has been observed working correctly with the
+// current firmware as-is -- existing modes, effects, brightness, and mute
+// behavior all display properly on it with no code changes, no indexing
+// failures, and no corrupted output. NUM_LEDS is therefore left at 58
+// (unchanged) rather than being replaced with 42: whether the physical
+// strip is actually 42, 58, or something else connected downstream has not
+// been independently confirmed from the repository, and driving more
+// pixels than are physically present is standard, harmless WS2812 behavior
+// (the extra data simply has no LED left in the chain to land on). These
+// constants are metadata only, describing the first 42 logical pixels of
+// the existing strip -- they do not change NUM_LEDS, do not create a
+// second NeoPixel object, and do not alter any effect's output by
+// themselves.
+struct LedRegion {
+  uint16_t start;
+  uint16_t count;
+};
+
+constexpr LedRegion LED_ROW_1{0, 10};
+constexpr LedRegion LED_ROW_2{10, 10};
+constexpr LedRegion LED_ROW_3{20, 22};
+constexpr uint16_t PHYSICAL_LED_COUNT = 42;
+
+static_assert(LED_ROW_1.start + LED_ROW_1.count == LED_ROW_2.start, "Row 1 must end exactly where Row 2 begins");
+static_assert(LED_ROW_2.start + LED_ROW_2.count == LED_ROW_3.start, "Row 2 must end exactly where Row 3 begins");
+static_assert(LED_ROW_3.start + LED_ROW_3.count == PHYSICAL_LED_COUNT, "Row 3 must end exactly at PHYSICAL_LED_COUNT");
+static_assert(PHYSICAL_LED_COUNT <= NUM_LEDS,
+              "PHYSICAL_LED_COUNT must fit within NUM_LEDS -- row indices address the existing strip object");
+
 #define BUTTON_MODE_PIN 10
 #define BUTTON_MUTE_PIN 11
 #define BUTTON_BRIGHTNESS_PIN 17

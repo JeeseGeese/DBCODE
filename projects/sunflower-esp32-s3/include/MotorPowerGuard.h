@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 // Temporary bench-development workaround, NOT a production fix: the
 // DRV8833 currently shares the ESP32's power supply with the LED strip
 // (see docs/DRV8833_MOTOR_BRINGUP.md), and motor engagement visibly
@@ -54,3 +55,50 @@ MotorPowerGuardState getMotorPowerGuardState();
 // For the '?' status command.
 bool isPreviousLedStateSaved();
 bool wasLedManuallyMutedBeforeRequest();
+
+// ----------------------------------------------------------------------------
+// Experimental: motor+LED coexistence testing (see
+// docs/DRV8833_MOTOR_BRINGUP.md, "42-LED assembly" section). FULL_MUTE
+// above is the existing, default, production-safe behavior and is
+// completely unchanged by this addition -- '2'/'3' never touch this and
+// always get FULL_MUTE. DIM_DURING_MOTION is a new, explicitly
+// experimental alternative used only by the dedicated motor+LED test
+// command: instead of muting, it keeps the currently-selected base effect
+// running (unreplaced, unpaused) but ramps overall brightness down to a
+// low test level for the duration of motor engagement, and suppresses the
+// audio overlay (the highest-current, least predictable rendering
+// component) meanwhile.
+// ----------------------------------------------------------------------------
+enum class MotorLedPowerMode {
+  FULL_MUTE,          // existing/default: LEDs fully muted during motor engagement
+  DIM_DURING_MOTION,  // experimental: LEDs stay on, ramped down to a low test brightness
+};
+
+// Selects which mode requestMotorPower() uses on its next call. Only takes
+// effect while IDLE (no-op mid-cycle, so a running request/release can't
+// change mode underneath itself). Defaults to FULL_MUTE.
+void setMotorLedPowerMode(MotorLedPowerMode mode);
+MotorLedPowerMode getMotorLedPowerMode();
+
+// True whenever DIM_DURING_MOTION is the active mode and a request is not
+// IDLE. main.cpp's render loop consults this to substitute
+// getMotorDimBrightnessRaw() for Controls.cpp's getBrightnessRaw(), and to
+// suspend the audio overlay -- the base effect itself keeps rendering
+// normally either way.
+bool isDimRenderActive();
+
+// Current ramped brightness override (0-255), meaningful only while
+// isDimRenderActive() is true. Ramps from the brightness in effect at
+// requestMotorPower() time down to the selected test level (see
+// cycleMotorDimTestLevel()), and back up symmetrically after release.
+uint8_t getMotorDimBrightnessRaw();
+
+// Cycles the DIM_DURING_MOTION test brightness through a small fixed set
+// {0, 4, 8, 12, 16}, printing the new selection. Deliberately capped at
+// 16/255 for the initial motor coexistence diagnostic -- do not raise this
+// range until physical testing at these levels has been reviewed.
+void cycleMotorDimTestLevel();
+uint8_t getMotorDimTestLevel();
+
+// For the '?' status command.
+void printMotorLedPowerDebugState();

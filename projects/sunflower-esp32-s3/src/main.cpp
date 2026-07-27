@@ -107,6 +107,9 @@ void setup() {
   Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
   Serial.println(F("[MOTOR PRIORITY TEST] Serial command: '2' = boot-equivalent runtime motor priority test"));
   Serial.println(F("[MOTOR BREAKAWAY] Serial command: '3' = aggressive breakaway test (jolt + 1500ms drive x2 cycles)"));
+  Serial.println(F("[MOTOR LED POWER] Serial command: '4' = cycle experimental motor-motion LED brightness (0/4/8/12/16)"));
+  Serial.println(F("[MOTOR+LED TEST] Serial command: '5' = experimental motor+dim-LED coexistence test (forward+reverse)"));
+  Serial.println(F("[LED ROW TEST] Serial command: '6' = optional LED row-identification test (unconfirmed mapping)"));
 #endif
 
   lastFrameTime = millis();
@@ -119,7 +122,11 @@ void setup() {
 // TEST implementation is below, after MOTOR PRIORITY TEST) is needed here
 // because the two tests are mutually exclusive with each other --
 // startPriorityTest() below checks breakawayPhase, and startBreakawayTest()
-// (further down) checks priorityTestPhase right back.
+// (further down) checks priorityTestPhase right back. MotorLedTestPhase and
+// RowTestPhase (full implementations further below, after MOTOR BREAKAWAY
+// TEST) are forward-declared here for the same reason -- all four tests
+// drive the motor and/or write LEDs directly and must be mutually
+// exclusive with each other.
 enum class BreakawayPhase {
   IDLE,
   PREPARING,
@@ -134,6 +141,31 @@ enum class BreakawayPhase {
   RELEASING,
 };
 BreakawayPhase breakawayPhase = BreakawayPhase::IDLE;
+
+enum class MotorLedTestPhase {
+  IDLE,
+  PREPARING,
+  FORWARD,
+  STOP1,
+  REVERSE,
+  STOP2,
+  RELEASING,
+};
+MotorLedTestPhase motorLedTestPhase = MotorLedTestPhase::IDLE;
+
+enum class RowTestPhase {
+  IDLE,
+  ROW1,
+  ROW1_OFF,
+  ROW2,
+  ROW2_OFF,
+  ROW3,
+  ROW3_OFF,
+  ALL_WHITE,
+  ALL_OFF,
+};
+RowTestPhase rowTestPhase = RowTestPhase::IDLE;
+bool isRowTestActive() { return rowTestPhase != RowTestPhase::IDLE; }
 
 // BEGIN MOTOR PRIORITY TEST
 // One-shot, non-blocking, boot-equivalent runtime test: requests
@@ -171,9 +203,13 @@ const char *priorityTestPhaseName(PriorityTestPhase p) {
 }
 
 void startPriorityTest() {
-  // Mutually exclusive with the '3' breakaway test (defined below) -- both
-  // use MotorPriorityMode and drive the motor directly.
-  if (priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE) return;
+  // Mutually exclusive with the '3' breakaway test, the '5' motor+LED
+  // coexistence test, and the '6' row test (all defined below) -- all four
+  // drive the motor and/or write LEDs directly.
+  if (priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isRowTestActive()) {
+    return;
+  }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
   Serial.println(F("[MOTOR PRIORITY TEST] Preparing"));
   requestMotorPriority();
@@ -312,10 +348,14 @@ void breakawayStop() {
 }
 
 void startBreakawayTest() {
-  // Mutually exclusive with the '2' priority test -- both use
-  // MotorPriorityMode and drive the motor directly; running either while
-  // the other is active would fight over both.
-  if (breakawayPhase != BreakawayPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE) return;
+  // Mutually exclusive with the '2' priority test, the '5' motor+LED
+  // coexistence test, and the '6' row test -- all drive the motor and/or
+  // write LEDs directly; running more than one at a time would fight over
+  // both.
+  if (breakawayPhase != BreakawayPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isRowTestActive()) {
+    return;
+  }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
   Serial.println(F("[MOTOR BREAKAWAY] Preparing"));
   requestMotorPriority();
@@ -438,6 +478,227 @@ void updateBreakawayTest() {
 }
 // END MOTOR BREAKAWAY TEST
 
+// BEGIN MOTOR+LED COEXISTENCE TEST
+// Experimental: runs one forward + one reverse motor movement while LEDs
+// stay ON (not muted) at a low, user-selectable brightness, via
+// MotorPowerGuard's DIM_DURING_MOTION mode (see MotorPowerGuard.h and the
+// render-loop branch in loop() above). The currently-selected base
+// effect/overlay/mute state are left completely alone -- MotorLedPowerMode
+// resets to the safe FULL_MUTE default on completion or cancellation, so
+// '2'/'3' are unaffected by having run this. See
+// docs/DRV8833_MOTOR_BRINGUP.md. Does NOT claim physical validation of
+// motor+LED coexistence -- the user must observe LED flicker/pulsing/color
+// corruption, motor slowdown, resets/brownouts, and audio instability
+// directly. MotorLedTestPhase/motorLedTestPhase are forward-declared above
+// (before MOTOR PRIORITY TEST) for the same mutual-exclusion reason as
+// BreakawayPhase.
+unsigned long motorLedTestPhaseStartMs = 0;
+
+void startMotorLedTest() {
+  // Mutually exclusive with '2'/'3'/'6' -- see their own guards above.
+  if (motorLedTestPhase != MotorLedTestPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
+      breakawayPhase != BreakawayPhase::IDLE || isRowTestActive()) {
+    return;
+  }
+  setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
+  Serial.println(F("[MOTOR+LED TEST] Preparing"));
+  setMotorLedPowerMode(MotorLedPowerMode::DIM_DURING_MOTION);
+  requestMotorPriority();
+  Serial.println(F("[MOTOR+LED TEST] Dim LEDs active"));
+  motorLedTestPhase = MotorLedTestPhase::PREPARING;
+  motorLedTestPhaseStartMs = millis();
+}
+
+// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+void cancelMotorLedTest() {
+  if (motorLedTestPhase == MotorLedTestPhase::IDLE) return;
+  releaseMotorPriorityImmediately();  // also stops the motor
+  setMotorLedPowerMode(MotorLedPowerMode::FULL_MUTE);  // restore the safe default for future '2'/'3' runs
+  motorLedTestPhase = MotorLedTestPhase::IDLE;
+  Serial.println(F("[MOTOR+LED TEST] Cancelled"));
+}
+
+void updateMotorLedTest() {
+  if (motorLedTestPhase == MotorLedTestPhase::IDLE) return;
+  unsigned long now = millis();
+  unsigned long elapsed = now - motorLedTestPhaseStartMs;
+
+  switch (motorLedTestPhase) {
+    case MotorLedTestPhase::IDLE:
+      break;
+    case MotorLedTestPhase::PREPARING:
+      if (isMotorPriorityReady()) {  // waits out both the settle delay AND the brightness ramp-down
+        Serial.println(F("[MOTOR+LED TEST] Forward"));
+        motorForward();
+        motorLedTestPhase = MotorLedTestPhase::FORWARD;
+        motorLedTestPhaseStartMs = now;
+      }
+      break;
+    case MotorLedTestPhase::FORWARD:  // below the 2000ms max-energized safeguard (matches the proven boot timing)
+      if (elapsed >= 250) {
+        motorStop();
+        motorLedTestPhase = MotorLedTestPhase::STOP1;
+        motorLedTestPhaseStartMs = now;
+      }
+      break;
+    case MotorLedTestPhase::STOP1:
+      if (elapsed >= 250) {
+        Serial.println(F("[MOTOR+LED TEST] Reverse"));
+        motorReverse();
+        motorLedTestPhase = MotorLedTestPhase::REVERSE;
+        motorLedTestPhaseStartMs = now;
+      }
+      break;
+    case MotorLedTestPhase::REVERSE:
+      if (elapsed >= 250) {
+        motorStop();
+        motorLedTestPhase = MotorLedTestPhase::STOP2;
+        motorLedTestPhaseStartMs = now;
+      }
+      break;
+    case MotorLedTestPhase::STOP2:
+      if (elapsed >= 250) {
+        Serial.println(F("[MOTOR+LED TEST] Restoring"));
+        releaseMotorPriority();  // starts MotorPriorityMode's own 100ms settle wait, then the brightness ramp-up
+        motorLedTestPhase = MotorLedTestPhase::RELEASING;
+        motorLedTestPhaseStartMs = now;
+      }
+      break;
+    case MotorLedTestPhase::RELEASING:
+      if (!isMotorPriorityActive()) {  // settle + ramp-up both complete
+        setMotorLedPowerMode(MotorLedPowerMode::FULL_MUTE);  // restore the safe default for future '2'/'3' runs
+        setMotorBehavior(MotorBehaviorMode::OFF);
+        Serial.println(F("[MOTOR+LED TEST] Complete"));
+        motorLedTestPhase = MotorLedTestPhase::IDLE;
+      }
+      break;
+  }
+}
+// END MOTOR+LED COEXISTENCE TEST
+
+// BEGIN LED ROW IDENTIFICATION TEST (optional diagnostic -- see TASK C)
+// Confirms which physical LEDs correspond to LED_ROW_1/2/3 (see Config.h)
+// by lighting each row in a distinct dim color in turn, directly on
+// `strip` -- bypasses the normal frameBuffer render pipeline for its
+// duration (see isRowTestActive() gating loop()'s render section above),
+// so there is exactly one strip.show() owner active at any moment. No
+// explicit "restore previous state" bookkeeping is needed: this test never
+// touches frameBuffer, base effect, overlay, brightness, or mute state --
+// the very next normal frame after it ends recomposes frameBuffer from
+// scratch and writes it to `strip` as usual. Does NOT claim the row
+// mapping is physically confirmed -- only that each phase was commanded;
+// the user must visually verify which physical LEDs actually lit.
+constexpr uint8_t ROW_TEST_DIM_LEVEL = 20;  // low brightness per channel, out of 255
+unsigned long rowTestPhaseStartMs = 0;
+
+void rowTestShowRegion(const LedRegion &region, uint8_t r, uint8_t g, uint8_t b) {
+  strip.clear();
+  for (uint16_t i = region.start; i < region.start + region.count; i++) {
+    strip.setPixelColor(i, strip.Color(r, g, b));
+  }
+  strip.show();
+}
+
+void rowTestShowAll(uint8_t r, uint8_t g, uint8_t b) {
+  for (uint16_t i = 0; i < PHYSICAL_LED_COUNT; i++) strip.setPixelColor(i, strip.Color(r, g, b));
+  strip.show();
+}
+
+void startRowTest() {
+  // Mutually exclusive with '2'/'3'/'5' -- see their own guards above.
+  if (isRowTestActive() || priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
+      motorLedTestPhase != MotorLedTestPhase::IDLE) {
+    return;
+  }
+  Serial.println(F("[LED ROW TEST] Row 1 (dim red) -- NOT yet physically confirmed, observe and verify"));
+  rowTestShowRegion(LED_ROW_1, ROW_TEST_DIM_LEVEL, 0, 0);
+  rowTestPhase = RowTestPhase::ROW1;
+  rowTestPhaseStartMs = millis();
+}
+
+// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+void cancelRowTest() {
+  if (!isRowTestActive()) return;
+  strip.clear();
+  strip.show();
+  rowTestPhase = RowTestPhase::IDLE;
+  Serial.println(F("[LED ROW TEST] Cancelled"));
+}
+
+void updateRowTest() {
+  if (!isRowTestActive()) return;
+  unsigned long now = millis();
+  unsigned long elapsed = now - rowTestPhaseStartMs;
+
+  switch (rowTestPhase) {
+    case RowTestPhase::IDLE:
+      break;
+    case RowTestPhase::ROW1:
+      if (elapsed >= 1000) {
+        strip.clear();
+        strip.show();
+        rowTestPhase = RowTestPhase::ROW1_OFF;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ROW1_OFF:
+      if (elapsed >= 300) {
+        Serial.println(F("[LED ROW TEST] Row 2 (dim green) -- NOT yet physically confirmed, observe and verify"));
+        rowTestShowRegion(LED_ROW_2, 0, ROW_TEST_DIM_LEVEL, 0);
+        rowTestPhase = RowTestPhase::ROW2;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ROW2:
+      if (elapsed >= 1000) {
+        strip.clear();
+        strip.show();
+        rowTestPhase = RowTestPhase::ROW2_OFF;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ROW2_OFF:
+      if (elapsed >= 300) {
+        Serial.println(F("[LED ROW TEST] Row 3 (dim blue) -- NOT yet physically confirmed, observe and verify"));
+        rowTestShowRegion(LED_ROW_3, 0, 0, ROW_TEST_DIM_LEVEL);
+        rowTestPhase = RowTestPhase::ROW3;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ROW3:
+      if (elapsed >= 1000) {
+        strip.clear();
+        strip.show();
+        rowTestPhase = RowTestPhase::ROW3_OFF;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ROW3_OFF:
+      if (elapsed >= 300) {
+        Serial.println(F("[LED ROW TEST] All 42 (dim white)"));
+        rowTestShowAll(ROW_TEST_DIM_LEVEL, ROW_TEST_DIM_LEVEL, ROW_TEST_DIM_LEVEL);
+        rowTestPhase = RowTestPhase::ALL_WHITE;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ALL_WHITE:
+      if (elapsed >= 500) {  // "no more than 500ms" per spec
+        strip.clear();
+        strip.show();
+        rowTestPhase = RowTestPhase::ALL_OFF;
+        rowTestPhaseStartMs = now;
+      }
+      break;
+    case RowTestPhase::ALL_OFF:
+      if (elapsed >= 100) {
+        Serial.println(F("[LED ROW TEST] Complete -- restoring previous LED state"));
+        rowTestPhase = RowTestPhase::IDLE;
+      }
+      break;
+  }
+}
+// END LED ROW IDENTIFICATION TEST
+
 // Live motor + MotorBehavior-test serial commands: 'f' = forward
 // (continuous), 'k' = stop, '0'/'1'/'2'/'3'/'?' = MotorBehavior test
 // commands (see below). Controls.cpp's pollSerialCommands() (called via
@@ -484,6 +745,13 @@ void updateBreakawayTest() {
 // full command map above, including 'f'/'k'/'0'/'1'/'2'/'?' already
 // reserved here -- free) continues that same convention for the MOTOR
 // BREAKAWAY TEST.
+//
+// '4'/'5'/'6' (checked against this same full command map -- free)
+// continue the same numeric convention for the 42-LED assembly work: '4'
+// cycles the experimental DIM_DURING_MOTION test brightness level, '5'
+// runs the motor+dim-LED coexistence test, '6' runs the optional LED row
+// test. All three are drained by this same `while` loop for the identical
+// back-to-back-byte reason documented above, and 'k' cancels all of them.
 static void pollMotorSerialCommands() {
   while (Serial.available() > 0) {
     int c = Serial.peek();
@@ -495,6 +763,8 @@ static void pollMotorSerialCommands() {
       Serial.read();
       cancelPriorityTest();
       cancelBreakawayTest();
+      cancelMotorLedTest();
+      cancelRowTest();
       stopMotorBehavior();
       Serial.println(F("[MOTOR] Stop"));
       Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
@@ -514,14 +784,37 @@ static void pollMotorSerialCommands() {
     } else if (c == '3') {
       Serial.read();
       startBreakawayTest();
+    } else if (c == '4') {
+      // '4' (checked against the full command map -- free) cycles the
+      // DIM_DURING_MOTION test brightness level; see TASK E.
+      Serial.read();
+      cycleMotorDimTestLevel();
+    } else if (c == '5') {
+      // '5' (checked against the full command map -- free) runs the
+      // experimental motor+dim-LED coexistence test at the currently
+      // selected level (see '4' above).
+      Serial.read();
+      startMotorLedTest();
+    } else if (c == '6') {
+      // '6' (checked against the full command map -- free) runs the
+      // optional LED row-identification test; see TASK C.
+      Serial.read();
+      startRowTest();
     } else if (c == '?') {
       Serial.read();
       printMotorBehaviorDebugState();
       printMotorPriorityDebugState();
+      printMotorLedPowerDebugState();
       Serial.printf("[MOTOR PRIORITY TEST] phase=%s\n", priorityTestPhaseName(priorityTestPhase));
       Serial.printf("[MOTOR BREAKAWAY] active=%d phase=%s cycle=%d elapsedMs=%lu\n",
                     breakawayPhase != BreakawayPhase::IDLE ? 1 : 0, breakawayPhaseName(breakawayPhase),
                     breakawayCycle, (unsigned long)(millis() - breakawayPhaseStartMs));
+      Serial.printf("[MOTOR+LED TEST] active=%d phase=%d\n", motorLedTestPhase != MotorLedTestPhase::IDLE ? 1 : 0,
+                    (int)motorLedTestPhase);
+      Serial.printf("[LED ROW TEST] active=%d phase=%d\n", isRowTestActive() ? 1 : 0, (int)rowTestPhase);
+      Serial.printf("[LED CONFIG] NUM_LEDS=%d PHYSICAL_LED_COUNT=%u row1=[%u,%u) row2=[%u,%u) row3=[%u,%u)\n", NUM_LEDS,
+                    PHYSICAL_LED_COUNT, LED_ROW_1.start, LED_ROW_1.start + LED_ROW_1.count, LED_ROW_2.start,
+                    LED_ROW_2.start + LED_ROW_2.count, LED_ROW_3.start, LED_ROW_3.start + LED_ROW_3.count);
     }
 #endif
     else {
@@ -538,6 +831,8 @@ void loop() {
   updateMotorPriorityMode();   // non-blocking; must tick every iteration regardless of test state
   updatePriorityTest();        // non-blocking; no-op when the priority test isn't running
   updateBreakawayTest();       // non-blocking; no-op when the breakaway test isn't running
+  updateMotorLedTest();        // non-blocking; no-op when the motor+LED coexistence test isn't running
+  updateRowTest();             // non-blocking; no-op when the LED row test isn't running
   updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons + serial, non-blocking -- always runs, even during MotorPriorityMode,
                           // so buttons/serial/emergency-stop stay live (Task 3 requirement)
@@ -556,6 +851,9 @@ void loop() {
   lastFrameTime = now;
 
   // Rendering priority:
+  //   0. row test active -> owns `strip` directly this frame (see
+  //      updateRowTest() above); skip the normal pipeline entirely so
+  //      there's never more than one strip.show() owner in a frame.
   //   1. muted            -> black (cue suppressed entirely, per spec)
   //   2. visual cue active -> cue frame, at its own fixed brightness cap
   //   3. otherwise        -> base effect + selected overlay, at user brightness
@@ -564,7 +862,10 @@ void loop() {
   // timestamps, so skipping their render call while muted or mid-cue
   // never corrupts or resets anything -- it just isn't computed for
   // frames nobody would see anyway.
-  if (isMuted()) {
+  if (isRowTestActive()) {
+    // Intentionally empty: updateRowTest() (called above) already owns
+    // every strip.setPixelColor()/show() call for this frame.
+  } else if (isMuted()) {
     if (!wasMuted) {
       strip.clear();
       strip.show();
@@ -573,6 +874,14 @@ void loop() {
     // else: already blanked: skip touching the strip entirely this frame.
   } else {
     wasMuted = false;
+
+    // Experimental motor+LED coexistence test (see MotorPowerGuard's
+    // MotorLedPowerMode / docs/DRV8833_MOTOR_BRINGUP.md): while active,
+    // the base effect keeps rendering completely normally below -- only
+    // the audio overlay (highest-current, least predictable component) is
+    // suppressed, and the final brightness is substituted below. Nothing
+    // here is frozen, replaced, or reset.
+    bool dimActive = isDimRenderActive();
 
     updateAudioVisualState(getAudioFeatures(), now); // keeps 'v'/status fresh regardless of what's rendered below
 
@@ -593,10 +902,11 @@ void loop() {
         renderBaseEffect(effect, frameBuffer, now);
       }
 
-      if (overlay != AudioOverlay::OFF) applyAudioOverlay(overlay, frameBuffer, audio, now);
+      if (overlay != AudioOverlay::OFF && !dimActive) applyAudioOverlay(overlay, frameBuffer, audio, now);
     }
 
-    uint8_t brightnessRaw = cueActive ? VISUAL_CUE_BRIGHTNESS_RAW : getBrightnessRaw();
+    uint8_t brightnessRaw =
+        cueActive ? VISUAL_CUE_BRIGHTNESS_RAW : (dimActive ? getMotorDimBrightnessRaw() : getBrightnessRaw());
     float brightnessScale = brightnessRaw / 255.0f;
     for (int i = 0; i < NUM_LEDS; i++) scaleClamp(frameBuffer[i], brightnessScale);
     applyPowerLimit(frameBuffer);

@@ -689,35 +689,73 @@ and are not exercised by this diagnostic. Success at a low brightness
 during this test does not by itself prove any effect is safe at full
 brightness while the motor runs.
 
-**Known reliability finding -- intermittent `k` miss during `5` (unresolved):**
-Serial validation found that `k` intermittently fails to cancel the `5`
-motor+LED coexistence test specifically (~50% miss rate across isolated,
-precisely-timed repeated trials, consistently during the `FORWARD` phase).
-The same `k` interceptor plumbing cancelled the `6` row test reliably
-(5/5) in the identical test methodology, and a temporary debug print
-confirmed that in the failing `5` trials, the `k` byte was never even seen
-by `pollMotorSerialCommands()` -- this is not a state-machine logic bug,
-the byte itself is going missing before the interceptor ever runs.
+**Reliability finding -- intermittent `k` miss during `5` (ROOT-CAUSED AND FIXED):**
+Serial validation initially found that `k` intermittently failed to cancel
+the `5` motor+LED coexistence test specifically (~50% miss rate across
+isolated, precisely-timed repeated trials, consistently during the
+`FORWARD` phase), while the same `k` interceptor plumbing cancelled the
+`6` row test reliably (5/5) in the identical methodology.
 
-The most likely explanation: `5` is the *only* test in this codebase that
-keeps full-rate LED rendering running (`strip.show()` roughly every
-`FRAME_INTERVAL_MS`=20ms) *while the motor is engaged* -- `DIM_DURING_MOTION`
-was deliberately designed this way (keep the effect animating, don't
-freeze it), unlike every other motor test (`1`/`2`/`3`), all of which mute
-or suspend LED rendering entirely for the engaged window. The working
-hypothesis is that repeated `strip.show()` calls (WS2812 timing via the
-RMT peripheral) are intermittently narrowing the window in which USB-CDC
-serial bytes get serviced, occasionally dropping one.
+**Proven root cause:** the codebase had exactly two independent Serial
+consumers -- `main.cpp`'s motor/LED interceptor (ran first each `loop()`
+iteration) and `Controls.cpp`'s own `pollSerialCommands()` (its own
+separate `while (Serial.available())` loop, called later in the same
+iteration via `updateControls()`). A byte arriving in the gap between the
+two calls would be read by `Controls.cpp` first -- silently absorbed into
+its Enter-terminated line buffer (no dispatch, since a lone `k` has no
+trailing `\n`) and never seen by the interceptor at all. Proof, not
+inference: temporary counters showed a counter placed in `Controls.cpp`
+that should always read zero (nothing there should ever see a reserved
+byte) instead incremented in lockstep with every observed `k`-miss during
+`5`, while the interceptor's own `k`-seen counter stayed flat on those
+same misses. `strip.show()`'s own measured duration stayed constant
+(~2.16ms, via `maxShowUs`) regardless of outcome, ruling it out as the
+direct mechanism -- it wasn't hardware/RMT timing dropping bytes, it was
+two independent readers racing for the same byte stream, with `5` simply
+running long enough (full-rate rendering across many `loop()` iterations)
+to make the race far more likely to land badly than the shorter-lived `6`.
 
-**This has not been root-caused or fixed.** It was deliberately left
-as-is rather than papered over, per the instruction to avoid unnecessary
-LED-driver refactoring -- fixing it properly likely means either changing
-how/when rendering happens during `DIM_DURING_MOTION`, or a lower-level
-serial-buffering change, both larger than this diagnostic's scope.
-Reassuring bound: even when `k` is missed, `5`'s own per-phase timing
-(250ms segments, well under the 2000ms safeguard) always self-terminates
-and restores FULL_MUTE/IDLE on its own -- the motor was never observed to
-run away or stay energized indefinitely in any trial. Until this is
-understood, do not treat `k` as an instantaneous guarantee specifically
-for the `5` test, and keep power/reset accessible during physical testing
-of `DIM_DURING_MOTION`.
+**Fix -- single serial owner:** `Serial.read()`/`available()` are now
+called from exactly one place in the entire program:
+`pollSerialDispatcher()` in `main.cpp`. `Controls.cpp` no longer reads
+Serial itself -- its former `pollSerialCommands()` was replaced with
+`feedSerialByte(char)`, fed one byte at a time by the central dispatcher,
+plus `clearPendingSerialLine()` / `isSerialLinePending()` for the
+emergency-stop and word-command handling below. This removes the race
+structurally (there is no second reader for a byte to be stolen by) rather
+than narrowing its window.
+
+`k` is checked first in the dispatcher, unconditionally, and triggers a
+latch (`triggerEmergencyStop()`/`serviceEmergencyStop()`) that performs the
+full stop sequence (all four test-cancel functions, `stopMotorBehavior()`,
+an explicit `motorStop()` backstop, and discarding any partially-typed
+Controls.cpp line) and is the only thing that clears itself -- never
+implicitly, and never just because one subsystem decided there was nothing
+for it to do. It's serviced immediately when `k` is read, and defensively
+re-serviced at the top of every motor-state-transition update function and
+immediately before/after every `strip.show()` call, so a byte arriving in
+any of those narrower windows is still caught with minimal added latency.
+
+**A second, related regression was found and fixed during this work:** a
+naive "check every byte independently, forward whatever doesn't match"
+version of the single dispatcher broke the `effects`/`overlays`/`status`
+word commands, because their second character happens to be `f` (a
+reserved byte) -- e.g. "effects" was corrupted into "eects" mid-type. The
+original peek-based interceptor avoided this by accident (it gave up
+entirely and handed off the *rest* of a burst to `Controls.cpp` the moment
+it saw the first non-reserved byte). The fix: `k` stays reserved
+unconditionally, but every other reserved byte defers to `Controls.cpp`
+whenever `isSerialLinePending()` is true (a word is already mid-type),
+restoring the original word-command behavior without reintroducing the
+two-consumer race.
+
+**Validated (see the git log for the exact test methodology):** 10/10
+isolated trials cancelling `5` during `FORWARD`, 10/10 during `REVERSE`,
+plus spot checks in `PREPARING`/`FORWARD_STOP`/`REVERSE_STOP`/`RELEASING`;
+`5k` and `5` immediately followed by `k` (both cancel cleanly); repeated
+`kkkk` with no test running (harmless); `k` after cycling brightness with
+`4`; `5` run to completion at all five brightness levels
+(0/4/8/12/16); and a full regression pass of `f`/`k`/`0`-`6`/`?`,
+`Controls.cpp`'s single-char commands, the `effects`/`overlays`/`status`
+word commands, and back-to-back input (`2k` single write). All passed.
+`k` may now be treated as reliable for `5`, same as every other test.

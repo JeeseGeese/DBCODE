@@ -433,19 +433,43 @@ static void dispatchCommand(const char *cmd) {
   else Serial.printf("[CMD] Unknown command '%s' -- press 'h' for help\n", cmd);
 }
 
-static void pollSerialCommands() {
-  while (Serial.available() > 0) {
-    char c = (char)Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') {
-      lineBuf[lineLen] = '\0';
-      if (lineLen > 0) dispatchCommand(lineBuf);
-      lineLen = 0;
-      continue;
-    }
-    if (lineLen < sizeof(lineBuf) - 1) lineBuf[lineLen++] = c;
+// Fed one byte at a time by main.cpp's pollSerialDispatcher() -- the ONLY
+// place in the whole program that calls Serial.read()/available() (see
+// docs/DRV8833_MOTOR_BRINGUP.md, command-5 emergency-stop investigation).
+// This function must never read Serial itself: an earlier version of this
+// file independently drained Serial in its own while loop, racing
+// main.cpp's motor/LED interceptor for the same byte stream -- proven (via
+// temporary instrumentation) to occasionally steal 'k' before the
+// interceptor ever saw it, since the two loops ran at different points in
+// the same loop() iteration with an unbounded byte-arrival gap between
+// them. Routing every byte through one owner removes that race entirely
+// rather than shrinking its window. Implements the same Enter-terminated
+// line buffering as before, just byte-at-a-time instead of self-driven.
+void feedSerialByte(char c) {
+  if (c == '\r') return;
+  if (c == '\n') {
+    lineBuf[lineLen] = '\0';
+    if (lineLen > 0) dispatchCommand(lineBuf);
+    lineLen = 0;
+    return;
   }
+  if (lineLen < sizeof(lineBuf) - 1) lineBuf[lineLen++] = c;
 }
+
+// Discards any partially-typed word-command line without dispatching it.
+// Used by main.cpp's emergency-stop latch so a line interrupted mid-type
+// (e.g. "stat" before 'k' arrives) can't silently combine with later
+// input into an unintended command.
+void clearPendingSerialLine() { lineLen = 0; }
+
+// True while a word-command line is mid-type (bytes received, no '\n'
+// yet). main.cpp's dispatcher uses this so a byte that would otherwise
+// look like a reserved single-char motor command (e.g. the 'f' inside
+// "effects") is routed here instead of intercepted, as long as it's really
+// the continuation of an in-progress word -- see that dispatcher's
+// comment for the full reasoning ('k' itself is the one exception: it
+// stays reserved unconditionally, even mid-word).
+bool isSerialLinePending() { return lineLen > 0; }
 
 // ============================================================================
 // Public API
@@ -474,7 +498,10 @@ void updateControls(unsigned long now) {
   handleMuteButton();
   handleBrightnessButton();
   handleButton4(now);
-  pollSerialCommands();
+  // Serial is no longer polled here -- main.cpp's pollSerialDispatcher()
+  // is the single owner of Serial.read()/available() and calls
+  // feedSerialByte() for every byte it doesn't claim itself. See that
+  // function's comment for why (a former independent poll here raced it).
 }
 
 BaseEffect getCurrentBaseEffect() { return currentBaseEffect; }

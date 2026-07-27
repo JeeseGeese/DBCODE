@@ -373,20 +373,28 @@ touched, so they're preserved automatically with no separate restore step.
 | `2` | Boot-equivalent `MotorPriorityMode` runtime test (Preparing → Forward 250ms → Stop 250ms → Reverse 250ms → Stop → release → back to `MotorBehavior` OFF) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `3` | Aggressive breakaway test: jolt + 1500ms full drive, 2 cycles (see MOTOR BREAKAWAY above) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `4` | Cycle the experimental `DIM_DURING_MOTION` test brightness level: `0, 4, 8, 12, 16` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4`. **Known issue: `k` intermittently (~50%) fails to cancel this specific test** — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21; the test always self-terminates safely on its own even when `k` is missed *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4`. `k` cancellation was found to be intermittent (~50%) here, root-caused to a two-consumer serial race, and fixed — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21 for the full writeup and validation (10/10 FORWARD, 10/10 REVERSE, plus edge cases) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `6` | Optional LED row-identification test: Row 1 dim red 1s → off → Row 2 dim green 1s → off → Row 3 dim blue 1s → off → all 42 dim white ≤500ms → off. Row mapping is **not** claimed as physically confirmed — visually verify *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard`/`MotorLedPowerMode` state, `MotorPriorityMode` state + LED/audio-suspended flags, and the priority/breakaway/motor+LED/row tests' active/phase state *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
 These fire on the single byte, unlike the Enter-terminated commands in
-[Serial controls](#serial-controls) below. They're implemented as a
-`Serial.peek()`-based interceptor in `main.cpp` that only consumes bytes
-matching these reserved keys, leaving everything else untouched for
-`Controls.cpp`'s own line-buffered parser — verified not to collide with
-any existing single-char or word command (`n,p,o,x,+,-,m,d,h,g,r,b,a,c,v`,
-`effects`/`overlays`/`status`). Two deliberate substitutions from what was
-originally planned, both to avoid stealing bytes from existing commands:
-`s` → `k` for motor-stop (`s` is the first letter of `status`), and `p` →
-`2` for the boot-equivalent test (`p` is Controls.cpp's existing
+[Serial controls](#serial-controls) below. They're implemented by
+`pollSerialDispatcher()` in `main.cpp` — the single, central owner of
+`Serial.read()`/`available()` for the whole program (see
+`docs/DRV8833_MOTOR_BRINGUP.md` section 21 for why: an earlier
+peek-based design left non-reserved bytes for `Controls.cpp`'s own
+independent Serial-reading loop, which raced it and occasionally stole
+`k`). Reserved bytes are handled directly; everything else is forwarded
+exactly once to `Controls.cpp`'s `feedSerialByte()` — verified not to
+collide with any existing single-char or word command
+(`n,p,o,x,+,-,m,d,h,g,r,b,a,c,v`, `effects`/`overlays`/`status`). `k` is
+checked first and unconditionally (even mid-word), acting through an
+emergency-stop latch; every other reserved byte defers to `Controls.cpp`
+while a word command is mid-type, so bytes like the `f` inside "effects"
+aren't misread as motor commands. Two deliberate substitutions from what
+was originally planned, both to avoid stealing bytes from existing
+commands: `s` → `k` for motor-stop (`s` is the first letter of `status`),
+and `p` → `2` for the boot-equivalent test (`p` is Controls.cpp's existing
 "previous base effect" command). `3`/`4`/`5`/`6` were each checked against
 the full command map and have no collision.
 

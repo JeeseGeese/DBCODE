@@ -10,10 +10,31 @@
 // setup(), after LedEffects/AudioOverlays are ready to receive reset calls.
 void initControls();
 
-// Polls all four buttons (debounced, edge/hold/double-click detection) and
-// any pending serial command bytes. Non-blocking -- call every loop()
-// iteration regardless of frame pacing or mute state.
+// Polls all four buttons (debounced, edge/hold/double-click detection).
+// Non-blocking -- call every loop() iteration regardless of frame pacing
+// or mute state. Does NOT read Serial -- see feedSerialByte() below.
 void updateControls(unsigned long now);
+
+// Feeds one incoming serial byte to Controls' Enter-terminated
+// line-command parser (n/p/o/x/+/-/m/d/h/g/r/b/a/c/v and the word
+// commands effects/overlays/status). Called by main.cpp's
+// pollSerialDispatcher() for every byte not claimed by the motor/LED
+// interceptor -- that dispatcher is the ONLY place in the program that
+// reads Serial directly; this function must never call
+// Serial.read()/available() itself (see pollSerialDispatcher()'s comment
+// in main.cpp for why a former independent reader here was unsafe).
+void feedSerialByte(char c);
+
+// Discards any partially-typed word-command line without dispatching it.
+// Used by main.cpp's emergency-stop handling so an interrupted line can't
+// combine with later input into an unintended command.
+void clearPendingSerialLine();
+
+// True while a word-command line is mid-type (bytes received, no '\n'
+// yet). See main.cpp's pollSerialDispatcher() for how this is used to
+// avoid misinterpreting a byte inside a word (e.g. "effects") as a
+// reserved single-char motor command.
+bool isSerialLinePending();
 
 BaseEffect getCurrentBaseEffect();
 

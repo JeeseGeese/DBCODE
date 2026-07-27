@@ -167,6 +167,16 @@ enum class RowTestPhase {
 RowTestPhase rowTestPhase = RowTestPhase::IDLE;
 bool isRowTestActive() { return rowTestPhase != RowTestPhase::IDLE; }
 
+// Forward declaration: serviceEmergencyStop() (full definition further
+// below, alongside the emergency-stop latch and the central serial
+// dispatcher) is needed here because updatePriorityTest()/
+// updateBreakawayTest()/updateMotorLedTest() below each call it once at
+// the top of their own body, defensively re-servicing an already-latched
+// 'k' immediately before that call's state-transition logic runs (see
+// docs/DRV8833_MOTOR_BRINGUP.md, "command-5 emergency-stop investigation",
+// TASK 4).
+void serviceEmergencyStop();
+
 // BEGIN MOTOR PRIORITY TEST
 // One-shot, non-blocking, boot-equivalent runtime test: requests
 // MotorPriorityMode (LEDs muted + suspended, audio processing suspended,
@@ -217,7 +227,7 @@ void startPriorityTest() {
   priorityTestPhaseStartMs = millis();
 }
 
-// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+// Cancelable at every phase via 'k' -- see pollSerialDispatcher() below.
 void cancelPriorityTest() {
   if (priorityTestPhase == PriorityTestPhase::IDLE) return;
   releaseMotorPriorityImmediately();  // also stops the motor
@@ -227,6 +237,8 @@ void cancelPriorityTest() {
 
 void updatePriorityTest() {
   if (priorityTestPhase == PriorityTestPhase::IDLE) return;
+  serviceEmergencyStop();  // defensive re-check before this transition -- see TASK 4 comment above
+  if (priorityTestPhase == PriorityTestPhase::IDLE) return;  // may have just been cancelled by the line above
   unsigned long now = millis();
   unsigned long elapsed = now - priorityTestPhaseStartMs;
 
@@ -364,7 +376,7 @@ void startBreakawayTest() {
   breakawayPhaseStartMs = millis();
 }
 
-// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+// Cancelable at every phase via 'k' -- see pollSerialDispatcher() below.
 // motorStop() (via breakawayStop()/releaseMotorPriorityImmediately(),
 // which itself calls motorStop() first) always happens before peripherals
 // are restored.
@@ -379,6 +391,8 @@ void cancelBreakawayTest() {
 
 void updateBreakawayTest() {
   if (breakawayPhase == BreakawayPhase::IDLE) return;
+  serviceEmergencyStop();  // defensive re-check before this transition -- see TASK 4 comment above
+  if (breakawayPhase == BreakawayPhase::IDLE) return;  // may have just been cancelled by the line above
   unsigned long now = millis();
   unsigned long elapsed = now - breakawayPhaseStartMs;
 
@@ -525,7 +539,7 @@ void startMotorLedTest() {
   motorLedTestPhaseStartMs = millis();
 }
 
-// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+// Cancelable at every phase via 'k' -- see pollSerialDispatcher() below.
 void cancelMotorLedTest() {
   if (motorLedTestPhase == MotorLedTestPhase::IDLE) return;
   releaseMotorPriorityImmediately();  // also stops the motor
@@ -536,6 +550,8 @@ void cancelMotorLedTest() {
 
 void updateMotorLedTest() {
   if (motorLedTestPhase == MotorLedTestPhase::IDLE) return;
+  serviceEmergencyStop();  // defensive re-check before this transition -- see TASK 4 comment above
+  if (motorLedTestPhase == MotorLedTestPhase::IDLE) return;  // may have just been cancelled by the line above
   unsigned long now = millis();
   unsigned long elapsed = now - motorLedTestPhaseStartMs;
 
@@ -632,7 +648,7 @@ void startRowTest() {
   rowTestPhaseStartMs = millis();
 }
 
-// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+// Cancelable at every phase via 'k' -- see pollSerialDispatcher() below.
 void cancelRowTest() {
   if (!isRowTestActive()) return;
   strip.clear();
@@ -715,109 +731,150 @@ void updateRowTest() {
 }
 // END LED ROW IDENTIFICATION TEST
 
-// Live motor + MotorBehavior-test serial commands: 'f' = forward
-// (continuous), 'k' = stop, '0'/'1'/'2'/'3'/'?' = MotorBehavior test
-// commands (see below). Controls.cpp's pollSerialCommands() (called via
-// updateControls() below) owns all other serial input via its own line
-// buffer, so this peeks the next byte and only consumes it -- via
-// Serial.read() -- when it matches one of these reserved keys; every
-// other byte is left untouched on the stream for Controls.cpp to read
-// normally. Checked against Controls.cpp's full command set
-// (n,p,o,x,+,-,m,d,h,g,r,b,a,c,v, plus the word commands
-// "effects"/"overlays"/"status") and don't collide with any of it.
-// Unlike Controls.cpp's line-buffered commands, these fire immediately on
-// the single byte -- no Enter needed.
+// ============================================================================
+// Emergency-stop latch (see docs/DRV8833_MOTOR_BRINGUP.md, "command-5
+// emergency-stop investigation")
+// ============================================================================
+// 'k' sets this the instant the byte is read by pollSerialDispatcher(),
+// rather than the byte's handler running an ad-hoc, one-off sequence of
+// calls inline. serviceEmergencyStop() is the single place that performs
+// the FULL stop (every test's cancel function, MotorBehavior, MotorDriver,
+// and the pending Controls.cpp line buffer) and is the only thing that
+// clears the latch -- it is never cleared just because one subsystem
+// (e.g. cancelPriorityTest()) decided there was nothing for it to do.
+// Idempotent and cheap, so it's safe to call defensively from multiple
+// points (see TASK 4 in the investigation: serviced before/after
+// strip.show() and at the top of every motor-state-transition update
+// function, in addition to the instant it's set) without needing to
+// reason about double-stopping.
+static volatile bool emergencyStopLatched = false;
+
+void serviceEmergencyStop() {
+  if (!emergencyStopLatched) return;
+  cancelPriorityTest();
+  cancelBreakawayTest();
+  cancelMotorLedTest();
+  cancelRowTest();
+  stopMotorBehavior();
+  motorStop();  // explicit backstop even though every path above already stops the motor via its own cancel
+  clearPendingSerialLine();  // discard any word-command line interrupted mid-type by this 'k'
+  emergencyStopLatched = false;
+  Serial.println(F("[MOTOR] Stop"));
+  Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
+}
+
+void triggerEmergencyStop() {
+  emergencyStopLatched = true;
+  serviceEmergencyStop();  // single-threaded synchronous loop -- "next executable point" is now
+}
+
+// ============================================================================
+// Central serial dispatcher -- the ONLY place in the whole program that
+// calls Serial.read()/available() (see docs/DRV8833_MOTOR_BRINGUP.md,
+// "command-5 emergency-stop investigation"). This replaces an earlier
+// design where this function only *peeked* reserved bytes (f/k/0-6/?) and
+// left everything else on the stream for Controls.cpp's OWN independent
+// `while (Serial.available())` loop to read. That worked most of the time,
+// but proved to have a real race: the two loops ran at different points
+// within the same loop() iteration, and a byte (specifically 'k') arriving
+// in the gap between them could be read by Controls.cpp's loop first --
+// silently absorbed into its Enter-terminated line buffer (no dispatch,
+// since no '\n' follows a lone 'k') and never seen by this dispatcher at
+// all. Proven with temporary instrumentation: a counter in Controls.cpp
+// that should always read zero (nothing there should ever see a reserved
+// byte) instead incremented in lockstep with every observed 'k'-miss
+// during the '5' motor+LED test, while this dispatcher's own 'k' counter
+// stayed flat on those same misses -- i.e. the byte was never lost at the
+// UART/USB level, it was read by the *other* consumer. strip.show()'s own
+// duration was also measured and stayed constant (~2.16ms) regardless of
+// whether cancellation succeeded, ruling it out as the direct cause.
 //
-// IMPORTANT: this is a `while` loop, not a single check -- it drains
-// *every* consecutive reserved byte before returning, not just one. A
-// single-check version (checking one byte, then returning, relying on the
-// next loop() iteration to check again) has a real race: if two reserved
-// bytes arrive in the same USB burst (e.g. '2' then 'k', as the
-// boot-equivalent MOTOR PRIORITY TEST followed immediately by an
-// emergency stop), consuming only the first one leaves the second sitting
-// in the buffer -- and Controls.cpp's OWN pollSerialCommands() (a `while`
-// loop, called later in the same loop() iteration via updateControls())
-// will greedily drain it into its line buffer first, silently losing it
-// from this interceptor's view forever. Discovered during validation of
-// 'k' cancelling the MOTOR PRIORITY TEST at every phase -- draining here
-// is what makes that guarantee hold when commands arrive back-to-back,
-// not just when hand-typed with natural gaps between keystrokes.
+// Fix: exactly one owner reads Serial now. Every byte is read here, then
+// either handled directly (the same reserved set as before: f/k/0-6/?) or
+// forwarded exactly once to Controls.cpp's feedSerialByte() -- which no
+// longer touches Serial itself (see Controls.cpp). This removes the race
+// structurally rather than narrowing its window: there is no longer a
+// second reader for a byte to be stolen by, at any point in the loop()
+// iteration.
 //
-// 'k' also calls stopMotorBehavior() (not just motorStop()) so it is a
-// true immediate-stop for both raw MotorDriver use and any active
-// MotorBehavior -- this is a deliberate substitute for the 's' key
-// originally requested for MotorBehavior's emergency stop: 's' is the
-// first letter of Controls.cpp's existing "status" word-command, and this
-// peek-based interceptor would otherwise steal that leading byte and break
-// "status" while ENABLE_MOTOR_BEHAVIOR_TEST is on. 'k' was already
-// established, unused elsewhere, and reusing it avoids that regression.
-// 'k' also cancels the MOTOR PRIORITY TEST (see above) at any phase.
+// 'k' is checked first, ahead of every other byte in the dispatch chain,
+// and triggers the emergency-stop latch (see triggerEmergencyStop() above
+// loop()) rather than acting inline -- see that function's comment for why
+// a latch, not just an inline call sequence, is the safer shape here.
 //
-// '2' was substituted for the originally-requested 'p': 'p' is
-// Controls.cpp's existing "previous base effect" single-char command
-// (case 'p': advanceBaseEffect(-1)), and this interceptor would otherwise
-// steal that byte and break it. '2' extends the existing 0/1
-// MotorBehavior-test numeric convention instead. '3' (checked against the
-// full command map above, including 'f'/'k'/'0'/'1'/'2'/'?' already
-// reserved here -- free) continues that same convention for the MOTOR
-// BREAKAWAY TEST.
+// This is still a `while` loop draining every consecutive byte in one
+// pass (not a single check per loop() iteration), which is what makes
+// back-to-back input like "5k" or "2k" deterministic: both bytes are
+// processed, in order, within the same call, rather than one potentially
+// waiting for the next loop() iteration (during which something else
+// could still observe/act on intermediate state).
 //
-// '4'/'5'/'6' (checked against this same full command map -- free)
-// continue the same numeric convention for the 42-LED assembly work: '4'
-// cycles the experimental DIM_DURING_MOTION test brightness level, '5'
-// runs the motor+dim-LED coexistence test, '6' runs the optional LED row
-// test. All three are drained by this same `while` loop for the identical
-// back-to-back-byte reason documented above, and 'k' cancels all of them.
-static void pollMotorSerialCommands() {
+// Reserved set: f/k/0/1/2/3/4/5/6/? (checked against Controls.cpp's full
+// command set -- n,p,o,x,+,-,m,d,h,g,r,b,a,c,v, plus the word commands
+// effects/overlays/status -- with no collisions; two deliberate
+// substitutions from what was originally requested are documented in
+// README.md's Serial commands section: 's'->'k' and 'p'->'2').
+uint32_t g_interceptorTotalBytesSeen = 0;
+uint32_t g_interceptorKSeen = 0;
+uint32_t g_maxShowUs = 0;
+uint32_t g_maxLoopUs = 0;
+
+static void pollSerialDispatcher() {
   while (Serial.available() > 0) {
-    int c = Serial.peek();
+    int c = Serial.read();  // the single Serial.read() call site in the entire program
+    g_interceptorTotalBytesSeen++;
+
+    // 'k' is checked before anything else and unconditionally, even if
+    // Controls.cpp currently has a word-command line mid-type (see the
+    // isSerialLinePending() check below) -- it is the emergency-stop
+    // command and must never be absorbed into a line buffer under any
+    // circumstance (TASK 2: "k is checked first" / "k cannot be consumed
+    // by another parser").
+    if (c == 'k' || c == 'K') {
+      g_interceptorKSeen++;
+      triggerEmergencyStop();
+      continue;
+    }
+
+    // If Controls.cpp is mid-word (e.g. typing "effects"), every other
+    // byte belongs to that line until '\n' terminates it -- even if it
+    // would otherwise match a reserved single-char command below. This
+    // restores a property the original peek-based interceptor had by
+    // accident (it gave up entirely, handing off the *rest* of a burst to
+    // Controls.cpp, the moment it saw the first non-reserved byte) and
+    // that a naive "check every byte independently" version of this
+    // dispatcher lost: without it, "effects" broke, because its second
+    // character is 'f' -- a reserved byte -- and got intercepted as a
+    // motor-forward command instead of being forwarded, corrupting the
+    // word into "eects". There's still only one Serial.read() call site
+    // (this one), so this doesn't reintroduce the two-consumer race.
+    if (isSerialLinePending()) {
+      feedSerialByte((char)c);
+      continue;
+    }
+
     if (c == 'f' || c == 'F') {
-      Serial.read();
       motorForward();
       Serial.println(F("[MOTOR] Forward"));
-    } else if (c == 'k' || c == 'K') {
-      Serial.read();
-      cancelPriorityTest();
-      cancelBreakawayTest();
-      cancelMotorLedTest();
-      cancelRowTest();
-      stopMotorBehavior();
-      Serial.println(F("[MOTOR] Stop"));
-      Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
     }
 #if ENABLE_MOTOR_BEHAVIOR_TEST
     else if (c == '0') {
-      Serial.read();
       setMotorBehavior(MotorBehaviorMode::OFF);
       Serial.println(F("[MOTOR BEHAVIOR] OFF"));
     } else if (c == '1') {
-      Serial.read();
       setMotorBehavior(MotorBehaviorMode::IDLE_SWAY);
       Serial.println(F("[MOTOR BEHAVIOR] IDLE_SWAY"));
     } else if (c == '2') {
-      Serial.read();
       startPriorityTest();
     } else if (c == '3') {
-      Serial.read();
       startBreakawayTest();
     } else if (c == '4') {
-      // '4' (checked against the full command map -- free) cycles the
-      // DIM_DURING_MOTION test brightness level; see TASK E.
-      Serial.read();
       cycleMotorDimTestLevel();
     } else if (c == '5') {
-      // '5' (checked against the full command map -- free) runs the
-      // experimental motor+dim-LED coexistence test at the currently
-      // selected level (see '4' above).
-      Serial.read();
       startMotorLedTest();
     } else if (c == '6') {
-      // '6' (checked against the full command map -- free) runs the
-      // optional LED row-identification test; see TASK C.
-      Serial.read();
       startRowTest();
     } else if (c == '?') {
-      Serial.read();
       printMotorBehaviorDebugState();
       printMotorPriorityDebugState();
       printMotorLedPowerDebugState();
@@ -831,18 +888,25 @@ static void pollMotorSerialCommands() {
       Serial.printf("[LED CONFIG] NUM_LEDS=%d PHYSICAL_LED_COUNT=%u row1=[%u,%u) row2=[%u,%u) row3=[%u,%u)\n", NUM_LEDS,
                     PHYSICAL_LED_COUNT, LED_ROW_1.start, LED_ROW_1.start + LED_ROW_1.count, LED_ROW_2.start,
                     LED_ROW_2.start + LED_ROW_2.count, LED_ROW_3.start, LED_ROW_3.start + LED_ROW_3.count);
+      // Lightweight, permanent diagnostics (see the dispatcher's own
+      // comment above) -- cheap counters/max-trackers, not per-frame
+      // prints, so they don't perturb the timing they observe.
+      Serial.printf("[DEBUG SERIAL] interceptorBytesSeen=%lu interceptorKSeen=%lu maxShowUs=%lu maxLoopUs=%lu\n",
+                    (unsigned long)g_interceptorTotalBytesSeen, (unsigned long)g_interceptorKSeen,
+                    (unsigned long)g_maxShowUs, (unsigned long)g_maxLoopUs);
     }
 #endif
     else {
-      break;  // not one of ours -- leave it (and everything after) for Controls.cpp
+      feedSerialByte((char)c);  // not one of ours -- forward to Controls.cpp's line parser
     }
   }
 }
 
 void loop() {
+  unsigned long loopStartUs = micros();  // lightweight diagnostic -- see g_maxLoopUs / pollSerialDispatcher()'s comment
   unsigned long now = millis();
 
-  pollMotorSerialCommands();
+  pollSerialDispatcher();       // the single Serial owner -- see its own comment for why
   updateMotorPowerGuard();     // non-blocking; must tick every iteration regardless of MotorBehavior mode
   updateMotorPriorityMode();   // non-blocking; must tick every iteration regardless of test state
   updatePriorityTest();        // non-blocking; no-op when the priority test isn't running
@@ -850,8 +914,9 @@ void loop() {
   updateMotorLedTest();        // non-blocking; no-op when the motor+LED coexistence test isn't running
   updateRowTest();             // non-blocking; no-op when the LED row test isn't running
   updateMotorBehavior();  // non-blocking; no-op when OFF
-  updateControls(now);   // buttons + serial, non-blocking -- always runs, even during MotorPriorityMode,
-                          // so buttons/serial/emergency-stop stay live (Task 3 requirement)
+  updateControls(now);   // buttons -- non-blocking, always runs, even during MotorPriorityMode, so
+                          // buttons/emergency-stop stay live (Task 3 requirement); serial is handled
+                          // above by pollSerialDispatcher(), not by updateControls() itself anymore
   // Suspended during MotorPriorityMode (boot-equivalent runtime motor
   // test) so mic reads/RMS processing don't compete with the motor for
   // system resources, mirroring the quiet state present during the
@@ -863,8 +928,20 @@ void loop() {
     updateAudioAnalyzer();  // I2S capture + AudioFeatures; otherwise runs every iteration regardless of mute/frame pacing
   }
 
-  if (now - lastFrameTime < FRAME_INTERVAL_MS) return;
+  if (now - lastFrameTime < FRAME_INTERVAL_MS) {
+    unsigned long loopUs = micros() - loopStartUs;
+    if (loopUs > g_maxLoopUs) g_maxLoopUs = loopUs;
+    return;
+  }
   lastFrameTime = now;
+
+  // Service serial once more immediately before preparing the LED frame --
+  // defense in depth on top of the single-owner dispatcher fix above (see
+  // its comment): shrinks the worst-case latency between a byte arriving
+  // and being serviced even further, in particular for 'k', which acts
+  // through the latch (serviceEmergencyStop()) regardless of when it's
+  // observed.
+  pollSerialDispatcher();
 
   // Rendering priority:
   //   0. row test active -> owns `strip` directly this frame (see
@@ -930,7 +1007,12 @@ void loop() {
     for (int i = 0; i < NUM_LEDS; i++) {
       strip.setPixelColor(i, strip.Color(frameBuffer[i].r, frameBuffer[i].g, frameBuffer[i].b));
     }
+    pollSerialDispatcher();  // service immediately before strip.show() -- see TASK 4 comment above
+    unsigned long showStartUs = micros();
     strip.show(); // exactly one show() per rendered frame
+    unsigned long showUs = micros() - showStartUs;
+    if (showUs > g_maxShowUs) g_maxShowUs = showUs;
+    pollSerialDispatcher();  // and immediately after -- see TASK 4 comment above
   }
 
   frameCounter++;
@@ -939,4 +1021,7 @@ void loop() {
     frameCounter = 0;
     lastFpsReportTime = now;
   }
+
+  unsigned long loopUs = micros() - loopStartUs;
+  if (loopUs > g_maxLoopUs) g_maxLoopUs = loopUs;
 }

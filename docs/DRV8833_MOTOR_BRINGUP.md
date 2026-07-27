@@ -344,10 +344,33 @@ object, brightness, base effect, or audio-overlay state directly, and
 duplicates no LED-control logic.
 
 `IDLE_SWAY` was restructured to request power before each energized
-segment and release it immediately after, without changing its physical
-timing: the 120ms forward/reverse pulses and 700ms/1200ms rest intervals
-are unchanged: the new power-request/ready wait (up to 50ms) happens
-*before* each 120ms pulse starts, not counted as part of it.
+segment and release it immediately after, without changing its rest
+intervals: the power-request/ready wait (up to 50ms) happens *before*
+each forward/reverse pulse starts, not counted as part of it. See
+section 16 for pulse-duration calibration under this integration.
 
 This module must not be treated as the final production power
 architecture — see section 14's recommendation.
+
+## 16. IDLE_SWAY pulse-duration calibration
+
+**120ms (original value, tested with MotorPowerGuard active):** the
+motor buzzed on each commanded pulse but did **not** produce reliable
+visible motion, under the current shared-power bench configuration. This
+differs from section 14's original digitalWrite-level validation (which
+did observe movement at 120ms with LEDs manually muted) — with
+`MotorPowerGuard` now auto-muting LEDs immediately before each pulse and
+restoring them after, the pulse itself was too short to reliably move the
+motor even with LED contention removed. This is consistent with the
+shared-supply/current-headroom hypothesis in section 14: a short pulse
+may not sustain long enough for the motor to reliably overcome static
+friction, particularly at the current 3.3V-only supply.
+
+**300ms (current value, under physical test):** `IDLE_SWAY_FORWARD_MS`
+and `IDLE_SWAY_REVERSE_MS` in `src/MotorBehavior.cpp` increased from 120
+to 300 for the next physical calibration pass. Rest intervals unchanged
+(`IDLE_SWAY_FORWARD_REST_MS`=700, `IDLE_SWAY_REVERSE_REST_MS`=1200). The
+`MotorPowerGuard` 50ms preparation delay and 100ms LED-restoration delay
+are both unchanged and are still not counted as part of the pulse.
+Physical movement at 300ms has not yet been confirmed -- pending
+observation.

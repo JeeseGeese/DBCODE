@@ -9,18 +9,21 @@ namespace {
 
 MotorBehaviorMode currentMode = MotorBehaviorMode::OFF;
 
-// IDLE_SWAY timing -- conservative first pass, physically validated. See
-// docs/DRV8833_MOTOR_BRINGUP.md section 13.
-constexpr uint32_t IDLE_SWAY_FORWARD_MS = 120;
-constexpr uint32_t IDLE_SWAY_STOP_AFTER_FORWARD_MS = 700;
-constexpr uint32_t IDLE_SWAY_REVERSE_MS = 120;
-constexpr uint32_t IDLE_SWAY_STOP_AFTER_REVERSE_MS = 1200;
+// IDLE_SWAY timing -- calibration in progress, physical testing ongoing.
+// See docs/DRV8833_MOTOR_BRINGUP.md section 14: 120ms pulses buzzed but
+// did not produce reliable visible motion under the current shared-power
+// bench configuration; 300ms is the next calibration value under physical
+// test. Named constants so future calibration passes only touch this
+// block.
+constexpr uint32_t IDLE_SWAY_FORWARD_MS = 300;
+constexpr uint32_t IDLE_SWAY_FORWARD_REST_MS = 700;
+constexpr uint32_t IDLE_SWAY_REVERSE_MS = 300;
+constexpr uint32_t IDLE_SWAY_REVERSE_REST_MS = 1200;
 
 // REQUEST_POWER_* phases wait on MotorPowerGuard's isMotorPowerReady()
 // before energizing -- their own wait time (up to the guard's 50ms
-// prepare delay) is NOT counted as part of the 120ms FORWARD/REVERSE
-// pulse, since phaseStartMs is reset fresh when each of those phases is
-// entered.
+// prepare delay) is NOT counted as part of the FORWARD/REVERSE pulse,
+// since phaseStartMs is reset fresh when each of those phases is entered.
 enum class IdleSwayPhase {
   REQUEST_POWER_FORWARD,
   FORWARD,
@@ -37,8 +40,9 @@ unsigned long phaseStartMs = 0;
 // machine: no single energized (forward/reverse) segment may run longer
 // than this, no matter which behavior is active or what bug might exist
 // in its timing logic. 0 means "not currently energized". IDLE_SWAY's own
-// phase durations (all <=1200ms, energized segments <=120ms) should never
-// actually trigger this -- it exists for future behaviors too.
+// phase durations (all <=1200ms, energized segments <=IDLE_SWAY_FORWARD_MS/
+// IDLE_SWAY_REVERSE_MS) should never actually trigger this -- it exists
+// for future behaviors too.
 constexpr uint32_t MAX_ENERGIZED_MS = 2000;
 unsigned long energizedSinceMs = 0;
 
@@ -96,7 +100,7 @@ void updateIdleSway(unsigned long now) {
       }
       break;
     case IdleSwayPhase::STOP_AFTER_FORWARD:
-      if (elapsed >= IDLE_SWAY_STOP_AFTER_FORWARD_MS) {
+      if (elapsed >= IDLE_SWAY_FORWARD_REST_MS) {
         idleSwayPhase = IdleSwayPhase::REQUEST_POWER_REVERSE;
         phaseStartMs = now;
         requestMotorPower();
@@ -118,7 +122,7 @@ void updateIdleSway(unsigned long now) {
       }
       break;
     case IdleSwayPhase::STOP_AFTER_REVERSE:
-      if (elapsed >= IDLE_SWAY_STOP_AFTER_REVERSE_MS) {
+      if (elapsed >= IDLE_SWAY_REVERSE_REST_MS) {
         idleSwayPhase = IdleSwayPhase::REQUEST_POWER_FORWARD;
         phaseStartMs = now;
         requestMotorPower();

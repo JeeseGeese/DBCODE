@@ -92,6 +92,13 @@ was measured; see the doc above for the full writeup). A temporary
 motor engagement so software work on both can continue — it is **not** a
 substitute for a dedicated motor power supply.
 
+**Pulse-duration calibration (in progress):** with `MotorPowerGuard`
+auto-muting LEDs before each pulse, 120ms pulses buzzed but did not
+produce reliable visible motion — shorter than what's needed to reliably
+move the motor even with LED contention removed. Pulse duration is now
+**300ms** (increased from 120ms) for the next physical test; rest
+intervals unchanged. See `docs/DRV8833_MOTOR_BRINGUP.md` section 16.
+
 **Verified wiring** (J2-bridged DRV8833 board):
 
 | Signal | Connection |
@@ -149,21 +156,27 @@ void printMotorBehaviorDebugState();          // mode/phase + MotorPowerGuard st
   which behavior is active or what its own timing logic does — a backstop,
   not the primary timing mechanism.
 
-**IDLE_SWAY** (the only implemented behavior, physically validated) —
-conservative, fully non-blocking, no `delay()`:
+**IDLE_SWAY** (the only implemented behavior; pulse duration under
+active physical calibration, see above) — conservative, fully
+non-blocking, no `delay()`:
 
 ```
-Request power -> [wait] -> Forward 120ms -> Stop -> Release power
+Request power -> [wait] -> Forward 300ms -> Stop -> Release power
   -> Stop 700ms
-  -> Request power -> [wait] -> Reverse 120ms -> Stop -> Release power
+  -> Request power -> [wait] -> Reverse 300ms -> Stop -> Release power
   -> Stop 1200ms -> repeat
 ```
 
-The physical timing (120ms pulses, 700ms/1200ms rests) is unchanged from
-the original design — each pulse is now preceded by a `MotorPowerGuard`
-request/ready wait (up to 50ms, see below), which is *not* counted as
-part of the 120ms pulse. The motor always passes through a stop segment
-between forward and reverse — no direct forward-to-reverse transition.
+Pulse duration (`IDLE_SWAY_FORWARD_MS`/`IDLE_SWAY_REVERSE_MS` in
+`src/MotorBehavior.cpp`) is currently 300ms, increased from the original
+120ms after physical testing showed 120ms pulses buzzed but didn't
+reliably move the motor (see `docs/DRV8833_MOTOR_BRINGUP.md` section 16).
+Rest intervals (`IDLE_SWAY_FORWARD_REST_MS`=700,
+`IDLE_SWAY_REVERSE_REST_MS`=1200) are unchanged. Each pulse is preceded
+by a `MotorPowerGuard` request/ready wait (up to 50ms, see below), which
+is *not* counted as part of the pulse. The motor always passes through a
+stop segment between forward and reverse — no direct forward-to-reverse
+transition.
 
 ### MotorPowerGuard — temporary bench-development workaround (`include/MotorPowerGuard.h` / `src/MotorPowerGuard.cpp`)
 
@@ -226,7 +239,7 @@ for motor-stop (as originally planned) because it's the first letter of
 
 - No command leaves the motor energized indefinitely by design: timed
   helpers (`motorForwardMs`/`motorReverseMs`) always stop themselves;
-  `IDLE_SWAY`'s longest energized segment is 120ms; a generic 2s
+  `IDLE_SWAY`'s longest energized segment is 300ms; a generic 2s
   max-runtime safety net backstops all behaviors regardless of mode.
 - `k` is a full emergency stop from any state (raw drive or any behavior).
 - No current-sensing or thermal-monitoring hardware exists — over-current,

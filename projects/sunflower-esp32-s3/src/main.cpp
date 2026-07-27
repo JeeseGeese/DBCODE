@@ -12,6 +12,7 @@
 #include "MotorBehavior.h"
 #include "MotorDriver.h"
 #include "MotorPowerGuard.h"
+#include "MotorPriorityMode.h"
 
 // Temporary test-only serial interface for MotorBehavior (Task 5 of the
 // motor bring-up plan, see docs/DRV8833_MOTOR_BRINGUP.md section 13). Set
@@ -101,8 +102,10 @@ void setup() {
   // ENABLE_MOTOR_BEHAVIOR_TEST commands below).
   initMotorPowerGuard();
   initMotorBehavior();
+  initMotorPriorityMode();
 #if ENABLE_MOTOR_BEHAVIOR_TEST
   Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
+  Serial.println(F("[MOTOR PRIORITY TEST] Serial command: '2' = boot-equivalent runtime motor priority test"));
 #endif
 
   lastFrameTime = millis();
@@ -111,16 +114,136 @@ void setup() {
   Serial.println(F("[SYSTEM] Ready"));
 }
 
-// Live motor serial commands: 'f' = forward (continuous), 'k' = stop.
-// Controls.cpp's pollSerialCommands() (called via updateControls() below)
-// owns all other serial input via its own line buffer, so this peeks the
-// next byte and only consumes it -- via Serial.read() -- when it matches
-// one of these two reserved keys; every other byte is left untouched on
-// the stream for Controls.cpp to read normally. 'f'/'k' were checked
-// against Controls.cpp's full command set (n,p,o,x,+,-,m,d,h,g,r,b,a,c,v,
-// plus the word commands "effects"/"overlays"/"status") and don't collide
-// with any of it. Unlike Controls.cpp's line-buffered commands, these fire
-// immediately on the single byte -- no Enter needed.
+// BEGIN MOTOR PRIORITY TEST
+// One-shot, non-blocking, boot-equivalent runtime test: requests
+// MotorPriorityMode (LEDs muted + suspended, audio processing suspended,
+// buttons/serial/emergency-stop still live), then reproduces the exact
+// forward/stop/reverse timing already proven to work during the boot-time
+// startup verification (motorForwardMs(250)/delay(250)/motorReverseMs(250)
+// in setup()) -- but non-blocking, via polling, instead of delay(). Exists
+// to establish whether recreating boot-equivalent peripheral conditions at
+// runtime reproduces the successful boot movement, before considering
+// motor voltage, PWM, or mechanical changes. See
+// docs/DRV8833_MOTOR_BRINGUP.md.
+enum class PriorityTestPhase {
+  IDLE,
+  PREPARING,
+  FORWARD,
+  STOP1,
+  REVERSE,
+  RELEASING,
+};
+
+PriorityTestPhase priorityTestPhase = PriorityTestPhase::IDLE;
+unsigned long priorityTestPhaseStartMs = 0;
+
+const char *priorityTestPhaseName(PriorityTestPhase p) {
+  switch (p) {
+    case PriorityTestPhase::IDLE: return "IDLE";
+    case PriorityTestPhase::PREPARING: return "PREPARING";
+    case PriorityTestPhase::FORWARD: return "FORWARD";
+    case PriorityTestPhase::STOP1: return "STOP1";
+    case PriorityTestPhase::REVERSE: return "REVERSE";
+    case PriorityTestPhase::RELEASING: return "RELEASING";
+  }
+  return "UNKNOWN";
+}
+
+void startPriorityTest() {
+  if (priorityTestPhase != PriorityTestPhase::IDLE) return;  // already running -- ignore re-trigger
+  setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
+  Serial.println(F("[MOTOR PRIORITY TEST] Preparing"));
+  requestMotorPriority();
+  priorityTestPhase = PriorityTestPhase::PREPARING;
+  priorityTestPhaseStartMs = millis();
+}
+
+// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+void cancelPriorityTest() {
+  if (priorityTestPhase == PriorityTestPhase::IDLE) return;
+  releaseMotorPriorityImmediately();  // also stops the motor
+  priorityTestPhase = PriorityTestPhase::IDLE;
+  Serial.println(F("[MOTOR PRIORITY TEST] Cancelled"));
+}
+
+void updatePriorityTest() {
+  if (priorityTestPhase == PriorityTestPhase::IDLE) return;
+  unsigned long now = millis();
+  unsigned long elapsed = now - priorityTestPhaseStartMs;
+
+  switch (priorityTestPhase) {
+    case PriorityTestPhase::IDLE:
+      break;
+    case PriorityTestPhase::PREPARING:
+      if (isMotorPriorityReady()) {
+        Serial.println(F("[MOTOR PRIORITY TEST] Forward"));
+        motorForward();
+        priorityTestPhase = PriorityTestPhase::FORWARD;
+        priorityTestPhaseStartMs = now;
+      }
+      break;
+    case PriorityTestPhase::FORWARD:
+      if (elapsed >= 250) {
+        motorStop();
+        Serial.println(F("[MOTOR PRIORITY TEST] Stop"));
+        priorityTestPhase = PriorityTestPhase::STOP1;
+        priorityTestPhaseStartMs = now;
+      }
+      break;
+    case PriorityTestPhase::STOP1:
+      if (elapsed >= 250) {
+        Serial.println(F("[MOTOR PRIORITY TEST] Reverse"));
+        motorReverse();
+        priorityTestPhase = PriorityTestPhase::REVERSE;
+        priorityTestPhaseStartMs = now;
+      }
+      break;
+    case PriorityTestPhase::REVERSE:
+      if (elapsed >= 250) {
+        motorStop();
+        releaseMotorPriority();  // starts MotorPriorityMode's own 100ms settle wait
+        priorityTestPhase = PriorityTestPhase::RELEASING;
+        priorityTestPhaseStartMs = now;
+      }
+      break;
+    case PriorityTestPhase::RELEASING:
+      if (!isMotorPriorityActive()) {  // MotorPriorityMode's RELEASING->IDLE transition completed
+        setMotorBehavior(MotorBehaviorMode::OFF);
+        Serial.println(F("[MOTOR PRIORITY TEST] Complete"));
+        priorityTestPhase = PriorityTestPhase::IDLE;
+      }
+      break;
+  }
+}
+// END MOTOR PRIORITY TEST
+
+// Live motor + MotorBehavior-test serial commands: 'f' = forward
+// (continuous), 'k' = stop, '0'/'1'/'2'/'?' = MotorBehavior test commands
+// (see below). Controls.cpp's pollSerialCommands() (called via
+// updateControls() below) owns all other serial input via its own line
+// buffer, so this peeks the next byte and only consumes it -- via
+// Serial.read() -- when it matches one of these reserved keys; every
+// other byte is left untouched on the stream for Controls.cpp to read
+// normally. Checked against Controls.cpp's full command set
+// (n,p,o,x,+,-,m,d,h,g,r,b,a,c,v, plus the word commands
+// "effects"/"overlays"/"status") and don't collide with any of it.
+// Unlike Controls.cpp's line-buffered commands, these fire immediately on
+// the single byte -- no Enter needed.
+//
+// IMPORTANT: this is a `while` loop, not a single check -- it drains
+// *every* consecutive reserved byte before returning, not just one. A
+// single-check version (checking one byte, then returning, relying on the
+// next loop() iteration to check again) has a real race: if two reserved
+// bytes arrive in the same USB burst (e.g. '2' then 'k', as the
+// boot-equivalent MOTOR PRIORITY TEST followed immediately by an
+// emergency stop), consuming only the first one leaves the second sitting
+// in the buffer -- and Controls.cpp's OWN pollSerialCommands() (a `while`
+// loop, called later in the same loop() iteration via updateControls())
+// will greedily drain it into its line buffer first, silently losing it
+// from this interceptor's view forever. Discovered during validation of
+// 'k' cancelling the MOTOR PRIORITY TEST at every phase -- draining here
+// is what makes that guarantee hold when commands arrive back-to-back,
+// not just when hand-typed with natural gaps between keystrokes.
 //
 // 'k' also calls stopMotorBehavior() (not just motorStop()) so it is a
 // true immediate-stop for both raw MotorDriver use and any active
@@ -130,56 +253,72 @@ void setup() {
 // peek-based interceptor would otherwise steal that leading byte and break
 // "status" while ENABLE_MOTOR_BEHAVIOR_TEST is on. 'k' was already
 // established, unused elsewhere, and reusing it avoids that regression.
+// 'k' also cancels the MOTOR PRIORITY TEST (see above) at any phase.
+//
+// '2' was substituted for the originally-requested 'p': 'p' is
+// Controls.cpp's existing "previous base effect" single-char command
+// (case 'p': advanceBaseEffect(-1)), and this interceptor would otherwise
+// steal that byte and break it. '2' extends the existing 0/1
+// MotorBehavior-test numeric convention instead.
 static void pollMotorSerialCommands() {
-  if (Serial.available() <= 0) return;
-  int c = Serial.peek();
-  if (c == 'f' || c == 'F') {
-    Serial.read();
-    motorForward();
-    Serial.println(F("[MOTOR] Forward"));
-  } else if (c == 'k' || c == 'K') {
-    Serial.read();
-    stopMotorBehavior();
-    Serial.println(F("[MOTOR] Stop"));
-    Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
-  }
-}
-
+  while (Serial.available() > 0) {
+    int c = Serial.peek();
+    if (c == 'f' || c == 'F') {
+      Serial.read();
+      motorForward();
+      Serial.println(F("[MOTOR] Forward"));
+    } else if (c == 'k' || c == 'K') {
+      Serial.read();
+      cancelPriorityTest();
+      stopMotorBehavior();
+      Serial.println(F("[MOTOR] Stop"));
+      Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
+    }
 #if ENABLE_MOTOR_BEHAVIOR_TEST
-// Temporary test-only MotorBehavior serial commands: '0' = OFF,
-// '1' = IDLE_SWAY, '?' = print state. Same peek-and-consume-one-byte
-// pattern as pollMotorSerialCommands() above, checked against the same
-// Controls.cpp command set plus 'f'/'k' -- '0', '1', and '?' collide with
-// none of it.
-static void pollMotorBehaviorTestCommands() {
-  if (Serial.available() <= 0) return;
-  int c = Serial.peek();
-  if (c == '0') {
-    Serial.read();
-    setMotorBehavior(MotorBehaviorMode::OFF);
-    Serial.println(F("[MOTOR BEHAVIOR] OFF"));
-  } else if (c == '1') {
-    Serial.read();
-    setMotorBehavior(MotorBehaviorMode::IDLE_SWAY);
-    Serial.println(F("[MOTOR BEHAVIOR] IDLE_SWAY"));
-  } else if (c == '?') {
-    Serial.read();
-    printMotorBehaviorDebugState();
+    else if (c == '0') {
+      Serial.read();
+      setMotorBehavior(MotorBehaviorMode::OFF);
+      Serial.println(F("[MOTOR BEHAVIOR] OFF"));
+    } else if (c == '1') {
+      Serial.read();
+      setMotorBehavior(MotorBehaviorMode::IDLE_SWAY);
+      Serial.println(F("[MOTOR BEHAVIOR] IDLE_SWAY"));
+    } else if (c == '2') {
+      Serial.read();
+      startPriorityTest();
+    } else if (c == '?') {
+      Serial.read();
+      printMotorBehaviorDebugState();
+      printMotorPriorityDebugState();
+      Serial.printf("[MOTOR PRIORITY TEST] phase=%s\n", priorityTestPhaseName(priorityTestPhase));
+    }
+#endif
+    else {
+      break;  // not one of ours -- leave it (and everything after) for Controls.cpp
+    }
   }
 }
-#endif
 
 void loop() {
   unsigned long now = millis();
 
   pollMotorSerialCommands();
-#if ENABLE_MOTOR_BEHAVIOR_TEST
-  pollMotorBehaviorTestCommands();
-#endif
-  updateMotorPowerGuard();  // non-blocking; must tick every iteration regardless of MotorBehavior mode
+  updateMotorPowerGuard();     // non-blocking; must tick every iteration regardless of MotorBehavior mode
+  updateMotorPriorityMode();   // non-blocking; must tick every iteration regardless of test state
+  updatePriorityTest();        // non-blocking; no-op when the priority test isn't running
   updateMotorBehavior();  // non-blocking; no-op when OFF
-  updateControls(now);   // buttons + serial, non-blocking
-  updateAudioAnalyzer();  // I2S capture + AudioFeatures; runs every iteration regardless of mute/frame pacing
+  updateControls(now);   // buttons + serial, non-blocking -- always runs, even during MotorPriorityMode,
+                          // so buttons/serial/emergency-stop stay live (Task 3 requirement)
+  // Suspended during MotorPriorityMode (boot-equivalent runtime motor
+  // test) so mic reads/RMS processing don't compete with the motor for
+  // system resources, mirroring the quiet state present during the
+  // boot-time verification. AudioFeatures simply stay at their last
+  // computed values for the (short, bounded) suspension window --
+  // harmless, since rendering/overlays are also suspended (LEDs muted)
+  // for the same window. See include/MotorPriorityMode.h.
+  if (!isAudioProcessingSuspended()) {
+    updateAudioAnalyzer();  // I2S capture + AudioFeatures; otherwise runs every iteration regardless of mute/frame pacing
+  }
 
   if (now - lastFrameTime < FRAME_INTERVAL_MS) return;
   lastFrameTime = now;

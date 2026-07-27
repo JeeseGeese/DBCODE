@@ -92,17 +92,27 @@ was measured; see the doc above for the full writeup). A temporary
 motor engagement so software work on both can continue — it is **not** a
 substitute for a dedicated motor power supply.
 
-**Pulse-duration calibration (in progress):** with `MotorPowerGuard`
+**Pulse-duration calibration (stopped):** with `MotorPowerGuard`
 auto-muting LEDs before each pulse, 120ms pulses buzzed but did not
-produce reliable visible motion. 300ms was a **partial pass**: both
-directions moved, but forward/reverse starts succeeded only
-~80% of the time, with failed starts buzzing until manually nudged —
-inconsistent dead-stop starting persisted even with LEDs muted. Pulse
-duration is now **500ms** (increased from 300ms) as the intended final
-pulse-duration calibration test; if 500ms doesn't approach consistent
-starting, further increases stop and the remaining issue is classified
-as a motor-power/mechanical-starting limitation, not a timing one. Rest
-intervals unchanged. See `docs/DRV8833_MOTOR_BRINGUP.md` section 16.
+produce reliable visible motion; 300ms was a **partial pass** (~80% start
+reliability, failed starts buzzing until manually nudged); **500ms
+failed** — LEDs muted correctly, but the motor still buzzed with no
+movement, no better than 300ms. Since `digitalWrite` HIGH/LOW is already
+a full-power command at every duration tested, **pulse-duration tuning is
+now stopped** — increasing it further cannot increase starting torque.
+500ms is **not** an approved final IDLE_SWAY value. See
+`docs/DRV8833_MOTOR_BRINGUP.md` section 16.
+
+**Boot vs. runtime discrepancy:** the motor starts cleanly, every time,
+during the boot-time startup verification, but not reliably during
+runtime IDLE_SWAY — even muted and at 500ms. Both paths issue the same
+full digital motor command, so the difference isn't pulse duration; it's
+that LED rendering, microphone/audio processing, and normal loop activity
+are all continuously active during runtime but not during the boot pulse
+(see `docs/DRV8833_MOTOR_BRINGUP.md` section 17 for the exact boot
+ordering). `MotorPriorityMode` (below) is a temporary diagnostic layer
+built to test that hypothesis directly, before considering motor voltage,
+PWM, or mechanical changes.
 
 **Verified wiring** (J2-bridged DRV8833 board):
 
@@ -223,15 +233,50 @@ void updateMotorPowerGuard();        // call every loop() iteration, regardless 
 - Emergency stop (`k`) and any `MotorBehavior` mode change call
   `releaseMotorPowerImmediately()`, so LEDs can never be left stuck muted.
 
+### MotorPriorityMode — temporary boot-equivalent runtime diagnostic (`include/MotorPriorityMode.h` / `src/MotorPriorityMode.cpp`)
+
+**Diagnostic only.** Built to test whether the boot-vs-runtime motor
+discrepancy (above) is caused by concurrent LED/audio/loop activity —
+recreates the quiet system state present during the boot-time motor
+verification (see `docs/DRV8833_MOTOR_BRINGUP.md` section 17) at runtime.
+Non-blocking, `millis()`-based, gated by `ENABLE_MOTOR_PRIORITY_MODE`.
+
+```cpp
+enum class MotorPriorityState { IDLE, PREPARING, READY, RELEASING };
+
+void initMotorPriorityMode();
+void requestMotorPriority();            // delegates LED-mute to MotorPowerGuard; suspends audio; 150ms settle
+bool isMotorPriorityReady();            // true once settled AND MotorPowerGuard reports ready
+void releaseMotorPriority();            // ensures motor stopped; 100ms settle; resumes audio + restores LEDs
+void releaseMotorPriorityImmediately(); // same, but bypasses the 100ms settle (emergency stop)
+void updateMotorPriorityMode();         // call every loop() iteration
+bool isMotorPriorityActive();
+```
+
+- Delegates **all** LED-mute save/force/restore to `MotorPowerGuard` —
+  no duplicated mute-state ownership between the two modules.
+- The only new capability: suspending `updateAudioAnalyzer()`. No changes
+  were made to `AudioAnalyzer.h`/`.cpp` — `main.cpp`'s `loop()` simply
+  skips *calling* it while `isAudioProcessingSuspended()` is true, since
+  that's its only call site. `AudioFeatures` just holds its last value
+  for the (short, bounded) suspension window.
+- Buttons, serial commands, and emergency stop (`k`) keep running
+  unconditionally throughout — only `updateAudioAnalyzer()` is skipped.
+- The one-shot **boot-equivalent runtime test** (`2`, see below)
+  reproduces the exact 250ms/250ms/250ms forward/stop/reverse timing
+  already proven to work at boot, inside `MotorPriorityMode`, without yet
+  wiring it into repeating `IDLE_SWAY`.
+
 ### Serial commands
 
 | Command | Action |
 |---|---|
 | `f` | `MotorDriver` forward (continuous, fires immediately, no Enter needed) |
-| `k` | Immediate stop — both raw `MotorDriver` hold and any active `MotorBehavior` (forces mode to `OFF`), and immediately releases/restores `MotorPowerGuard` |
+| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority test; releases/restores `MotorPowerGuard` |
 | `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* — also releases `MotorPowerGuard` immediately |
 | `1` | `MotorBehavior` IDLE_SWAY *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `?` | Print `MotorBehavior` mode/phase plus `MotorPowerGuard` enabled state, guard state, whether a previous LED state is saved, and whether LEDs were already manually muted before the request *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `2` | Boot-equivalent `MotorPriorityMode` runtime test (Preparing → Forward 250ms → Stop 250ms → Reverse 250ms → Stop → release → back to `MotorBehavior` OFF) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard` state, `MotorPriorityMode` state + LED/audio-suspended flags, and the priority test's own phase *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
 These fire on the single byte, unlike the Enter-terminated commands in
 [Serial controls](#serial-controls) below. They're implemented as a
@@ -239,10 +284,11 @@ These fire on the single byte, unlike the Enter-terminated commands in
 matching these reserved keys, leaving everything else untouched for
 `Controls.cpp`'s own line-buffered parser — verified not to collide with
 any existing single-char or word command (`n,p,o,x,+,-,m,d,h,g,r,b,a,c,v`,
-`effects`/`overlays`/`status`). Note: `s` was intentionally **not** used
-for motor-stop (as originally planned) because it's the first letter of
-`status`, and a byte-level interceptor on `s` would break that command;
-`k` is used instead.
+`effects`/`overlays`/`status`). Two deliberate substitutions from what was
+originally planned, both to avoid stealing bytes from existing commands:
+`s` → `k` for motor-stop (`s` is the first letter of `status`), and `p` →
+`2` for the boot-equivalent test (`p` is Controls.cpp's existing
+"previous base effect" command).
 
 ### Safety behavior
 
@@ -257,6 +303,15 @@ for motor-stop (as originally planned) because it's the first letter of
 ### Current limitations
 
 - No PWM/speed control yet.
+- Runtime `IDLE_SWAY` does not start the motor reliably even at 500ms and
+  with LEDs muted — pulse-duration tuning is stopped (see the
+  boot-vs-runtime discrepancy note above and
+  `docs/DRV8833_MOTOR_BRINGUP.md` section 16). The motor starts cleanly
+  every time during the boot-time verification, which runs in a much
+  quieter system state (section 17) — `MotorPriorityMode`'s `2` test
+  exists to check whether recreating that state at runtime fixes it,
+  before considering motor voltage, PWM, or mechanical changes. This
+  supersedes the earlier, narrower "dead-stop-assist" observation below.
 - The motor sometimes needs a brief manual assist to start from a dead
   stop; not attributed to a confirmed root cause (see
   `docs/DRV8833_MOTOR_BRINGUP.md` section 8 — UVLO is a plausible

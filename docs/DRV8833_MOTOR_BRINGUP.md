@@ -385,15 +385,143 @@ throughout.
 > increases should stop and the remaining issue should be classified as
 > a motor-power or mechanical-starting limitation.
 
-**500ms (current value, under physical test — intended final
-pulse-duration calibration):** `IDLE_SWAY_FORWARD_MS` and
-`IDLE_SWAY_REVERSE_MS` in `src/MotorBehavior.cpp` increased from 300 to
-500. Rest intervals unchanged (`IDLE_SWAY_FORWARD_REST_MS`=700,
-`IDLE_SWAY_REVERSE_REST_MS`=1200). The `MotorPowerGuard` 50ms preparation
-delay and 100ms LED-restoration delay are both unchanged and are still
-not counted as part of the pulse. Physical movement/reliability at 500ms
-has not yet been confirmed -- pending observation. Per the engineering
-interpretation above, if 500ms does not approach consistent starting,
-further pulse-duration increases should stop here and the remaining
-unreliability should be classified as a motor-power or
-mechanical-starting limitation rather than a timing one.
+**500ms (failed):** `IDLE_SWAY_FORWARD_MS` and `IDLE_SWAY_REVERSE_MS` in
+`src/MotorBehavior.cpp` were increased from 300 to 500 (rest intervals,
+`MotorPowerGuard`'s 50ms preparation delay, and 100ms LED-restoration
+delay all unchanged). Physical result: `MotorPowerGuard` muted the LEDs
+correctly, but IDLE_SWAY still produced buzzing with no movement --
+increasing the pulse from 300ms to 500ms did not improve startup. **500ms
+is not an approved final IDLE_SWAY value.**
+
+**Pulse-duration tuning is now stopped.** Per the engineering conclusion
+below, additional pulse duration cannot increase startup torque, since
+`digitalWrite` HIGH/LOW is already a full-power command at every tested
+duration -- this was never a "startup kick" timing problem.
+
+**Boot vs. runtime discrepancy.** The motor starts cleanly forward
+and reverse during the existing boot-time startup verification (the
+blocking `motorForwardMs(250)`/`delay(250)`/`motorReverseMs(250)`
+sequence in `setup()`), every time, but does not start reliably during
+runtime IDLE_SWAY -- even after LED output is muted (via
+`MotorPowerGuard`) and pulse duration is increased to 500ms.
+
+> The motor starts cleanly during the boot-time verification but does
+> not start during runtime IDLE_SWAY, even after LED output is muted and
+> pulse duration is increased to 500 ms. Because both paths use the same
+> full digital motor command, additional pulse duration cannot increase
+> startup torque. The remaining difference is the runtime system state:
+> LED updates, microphone/audio processing, and normal loop activity are
+> active during IDLE_SWAY but not during the earliest boot-time
+> verification. The next diagnostic should recreate boot-equivalent
+> peripheral conditions during runtime before changing motor voltage,
+> PWM, or mechanical hardware.
+
+See section 17 for the exact boot-time ordering that makes the boot pulse
+succeed, and section 18 for `MotorPriorityMode`, the temporary
+diagnostic layer built to test this hypothesis directly.
+
+## 17. Boot verification ordering
+
+Exact `setup()` ordering (see `src/main.cpp`), and what's active at each
+step:
+
+1. `initMotor()` -- GPIO8/GPIO9 configured OUTPUT, forced LOW.
+2. `Serial.begin()`, wait for host attach, `delay(300)`.
+3. `initLedEffects()` -- state only, no strip I/O.
+4. `strip.begin()`, `strip.setBrightness(255)`, `strip.clear()`,
+   `strip.show()` -- one blank/off frame written; strip is now idle.
+5. `initAudioAnalyzer()` -- installs the I2S driver. Nothing reads from it
+   yet.
+6. `initControls()` -- button `pinMode`s, initial effect/overlay/
+   brightness state, prints help. No continuous polling started yet.
+7. `runHardwareTestSequence(strip)` -- **actively drives the LED strip**
+   (solid colors, rainbow, many `strip.show()` calls) for several
+   seconds, then blanks it; **actively reads I2S** (`updateAudioAnalyzer()`
+   in a loop) for a 20s mic-verification window. Both LED and audio
+   activity happen here, but finish before the next step.
+8. `runMicRetest()` -- another **actively reading I2S** diagnostic
+   (5 phases, ~30s total), independent of `AudioAnalyzer`'s pipeline.
+   Finishes before the next step.
+9. **`motorForwardMs(250)` / `delay(250)` / `motorReverseMs(250)`** -- the
+   boot-time motor verification itself. At this exact point: the LED
+   strip has been blank/idle since the end of step 7 (no `strip.show()`
+   calls happen during this window); no code is reading the I2S
+   peripheral (steps 7 and 8's read loops have both already returned);
+   `loop()` has not started yet, so there is no button polling, no serial
+   command processing, and no `updateAudioAnalyzer()` calls happening
+   concurrently. This is the quietest possible system state the firmware
+   ever reaches.
+10. `initMotorPowerGuard()`, `initMotorBehavior()`,
+    `initMotorPriorityMode()` -- state only.
+11. `loop()` begins -- from here on, `updateControls()` (buttons +
+    serial), `updateAudioAnalyzer()` (continuous I2S reads + RMS/envelope
+    computation), and LED rendering (`strip.show()` roughly every
+    `FRAME_INTERVAL_MS`=20ms, whenever not muted) are all continuously
+    and concurrently active for the remaining lifetime of the program.
+
+**Conclusion:** the boot pulse succeeds in a system state with zero
+concurrent LED rendering and zero concurrent audio/mic processing --
+not just "LEDs happen to be off," but no other peripheral activity of any
+kind competing for CPU time, bus access, or (potentially) shared power
+headroom. Runtime `IDLE_SWAY`, even with `MotorPowerGuard` muting LEDs,
+still runs inside `loop()`, where `updateAudioAnalyzer()` and
+`updateControls()` remain continuously active throughout. The boot test
+was not moved for this investigation -- only instrumented/reproduced via
+`MotorPriorityMode` (section 18) to test the peripheral-suspension
+hypothesis without disturbing the proven-working boot sequence.
+
+## 18. MotorPriorityMode (temporary boot-equivalent runtime diagnostic)
+
+`include/MotorPriorityMode.h` / `src/MotorPriorityMode.cpp` -- a
+coordination layer that recreates the boot-time quiet state (section 17)
+at runtime, to test whether that -- rather than pulse duration, voltage,
+or mechanics -- explains the boot-vs-runtime discrepancy.
+
+```cpp
+enum class MotorPriorityState { IDLE, PREPARING, READY, RELEASING };
+
+void initMotorPriorityMode();
+void requestMotorPriority();            // delegates LED-mute to MotorPowerGuard; suspends audio; 150ms settle
+bool isMotorPriorityReady();            // true once settled AND MotorPowerGuard reports ready
+void releaseMotorPriority();            // ensures motor stopped; 100ms settle; then resumes audio + restores LEDs
+void releaseMotorPriorityImmediately(); // same, but bypasses the 100ms settle (emergency stop)
+void updateMotorPriorityMode();         // call every loop() iteration
+bool isMotorPriorityActive();
+```
+
+- Delegates **all** LED-mute save/force/restore to `MotorPowerGuard`
+  (`requestMotorPower()`/`releaseMotorPowerImmediately()` internally) --
+  no duplicated mute-state ownership between the two modules.
+- Adds one new capability `MotorPowerGuard` didn't have: suspending
+  `updateAudioAnalyzer()`. No changes were made to `AudioAnalyzer.h`/
+  `.cpp` to achieve this -- `main.cpp`'s `loop()` simply skips *calling*
+  `updateAudioAnalyzer()` for the (short, bounded) duration
+  `isAudioProcessingSuspended()` is true, since that function is only
+  ever invoked from that one call site. `AudioFeatures` just holds its
+  last-computed values during suspension, which is harmless because
+  rendering/overlay processing is also suspended (LEDs muted) for the
+  same window.
+- Buttons, serial commands, `updateMotorPowerGuard()`, and emergency stop
+  (`k`) all keep running unconditionally throughout -- only
+  `updateAudioAnalyzer()` is conditionally skipped.
+- A one-shot, non-blocking **boot-equivalent runtime test** (serial
+  command `2` -- see the note on `p` below) reproduces the exact
+  forward/stop/reverse timing already proven to work at boot
+  (250ms/250ms/250ms), inside `MotorPriorityMode`, to test the hypothesis
+  directly without yet wiring it into repeating `IDLE_SWAY`.
+- **Command substitution:** the task that specified this diagnostic
+  requested `p` for the test trigger. `p` is already Controls.cpp's
+  "previous base effect" command (`case 'p': advanceBaseEffect(-1)`), and
+  the peek-based serial interceptor pattern used throughout this project
+  would have silently stolen that byte and broken it. Substituted `2`
+  instead, extending the existing `0`/`1` `MotorBehavior`-test numeric
+  convention (see section 13) rather than introducing a new letter.
+
+This module is diagnostic-only. Physical movement from the `2` test has
+not been confirmed -- pending observation. If it *does* reproduce
+reliable movement, that confirms the boot-vs-runtime peripheral-activity
+hypothesis and motivates integrating `MotorPriorityMode` into repeating
+`IDLE_SWAY` next. If it does *not*, the peripheral-suspension hypothesis
+is ruled out and the remaining investigation should move to motor
+voltage/supply or mechanical causes, per the engineering conclusion
+above.

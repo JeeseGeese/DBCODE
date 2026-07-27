@@ -15,9 +15,10 @@ microphone driving optional audio-reactive overlays.
 - **Microphone:** 1x INMP441 I2S MEMS microphone
 - **Power:** ESP32 5V pin and LED strip 5V share a common ground with the
   ESP32 GND pin; INMP441 VDD runs from the ESP32 3V3 pin
-- **No motor / DRV8833 hardware on this board.** Motor bring-up work lives
-  entirely in the separate `drv8833-motor-test` project on a different
-  ESP32-S3; this firmware contains no motor code of any kind.
+- **Motor:** 1x DRV8833 H-bridge driver + brushed DC motor, bring-up
+  complete — see [Motor driver (DRV8833)](#motor-driver-drv8833) below and
+  [`docs/DRV8833_MOTOR_BRINGUP.md`](../../docs/DRV8833_MOTOR_BRINGUP.md) for
+  the full bring-up history.
 
 ## GPIO assignments
 
@@ -31,6 +32,8 @@ microphone driving optional audio-reactive overlays.
 | INMP441 SCK/BCLK | 6 | I2S bit clock, driven by the ESP32 (I2S master) |
 | INMP441 WS/LRCLK | 7 | I2S word select, driven by the ESP32 (I2S master) |
 | INMP441 SD/DATA | 15 | I2S data input to the ESP32 |
+| DRV8833 IN1 | 8 | `digitalWrite` only, no PWM yet — see Motor driver section |
+| DRV8833 IN2 | 9 | `digitalWrite` only, no PWM yet — see Motor driver section |
 
 INMP441 `L/R` is tied to GND (selects the LEFT I2S channel) and `GND` is
 tied to a common ground shared with the ESP32.
@@ -69,6 +72,130 @@ pio device monitor -p /dev/ttyACM0 -b 115200
 ```
 
 (Ctrl+C to exit.)
+
+## Motor driver (DRV8833)
+
+**STATUS: HARDWARE BRING-UP COMPLETE.** Full bring-up history (failed PWM
+characterization, digital isolation test, electrical diagnostic, final
+validation, measured facts vs. hypotheses) is in
+[`docs/DRV8833_MOTOR_BRINGUP.md`](../../docs/DRV8833_MOTOR_BRINGUP.md).
+
+**Verified wiring** (J2-bridged DRV8833 board):
+
+| Signal | Connection |
+|---|---|
+| DRV8833 IN1 | ESP32 GPIO8 |
+| DRV8833 IN2 | ESP32 GPIO9 |
+| DRV8833 VCC | ESP32 3.3V |
+| DRV8833 GND | ESP32 GND (common) |
+| Motor | DRV8833 OUT1 / OUT2 |
+| ULT/SLEEP | Not connected / not driven by firmware |
+
+**Control method:** `digitalWrite` only. **PWM is intentionally deferred**
+— no speed control yet, direction and stop/brake only.
+
+### MotorDriver API (`include/MotorDriver.h` / `src/MotorDriver.cpp`)
+
+The only module allowed to touch GPIO8/GPIO9.
+
+| Function | Behavior |
+|---|---|
+| `initMotor()` | Configures GPIO8/GPIO9 as outputs, forces both LOW. Called first in `setup()`, before Serial/LED/mic init. |
+| `motorForward()` | IN1=HIGH, IN2=LOW — runs until told otherwise |
+| `motorReverse()` | IN1=LOW, IN2=HIGH — runs until told otherwise |
+| `motorStop()` | IN1=LOW, IN2=LOW (coast) |
+| `motorBrake()` | IN1=HIGH, IN2=HIGH (DRV8833 brake mode) |
+| `motorForwardMs(ms)` | Drives forward for `ms`, then always stops |
+| `motorReverseMs(ms)` | Drives reverse for `ms`, then always stops |
+
+### MotorBehavior architecture (`include/MotorBehavior.h` / `src/MotorBehavior.cpp`)
+
+Non-blocking, `millis()`-based behavior layer built strictly on top of
+`MotorDriver` — it never touches GPIO8/GPIO9 directly. Intended as the
+foundation for future motor "personality" (idle motion now, audio-reactive
+behavior later) without redesigning the driver layer.
+
+```cpp
+enum class MotorBehaviorMode { OFF, IDLE_SWAY, GENTLE_NOD, DANCE_BASIC };
+
+void initMotorBehavior();                    // resets to OFF, motor stopped
+void setMotorBehavior(MotorBehaviorMode m);   // always stops the motor first
+MotorBehaviorMode getMotorBehavior();
+void updateMotorBehavior();                   // call every loop() iteration
+void stopMotorBehavior();                     // immediate stop, forces OFF
+```
+
+- Starts in `OFF` after boot. **Not** auto-enabled — a mode must be
+  explicitly selected.
+- Switching modes always stops the motor first, so a previous behavior's
+  drive state can never bleed into the next one.
+- `GENTLE_NOD` and `DANCE_BASIC` are currently safe placeholders: selecting
+  them keeps the motor stopped and prints a one-time "not implemented"
+  message.
+- A generic 2-second max-energized-runtime safety net applies regardless of
+  which behavior is active or what its own timing logic does — a backstop,
+  not the primary timing mechanism.
+
+**IDLE_SWAY** (the only implemented behavior) — conservative, fully
+non-blocking, no `delay()`:
+
+```
+Forward 120ms -> Stop 700ms -> Reverse 120ms -> Stop 1200ms -> repeat
+```
+
+The motor always passes through a stop segment between forward and
+reverse — no direct forward-to-reverse transition.
+
+### Serial commands
+
+| Command | Action |
+|---|---|
+| `f` | `MotorDriver` forward (continuous, fires immediately, no Enter needed) |
+| `k` | Immediate stop — both raw `MotorDriver` hold and any active `MotorBehavior` (forces mode to `OFF`) |
+| `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* |
+| `1` | `MotorBehavior` IDLE_SWAY *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `?` | Print current `MotorBehavior` mode + internal phase/timing *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+
+These fire on the single byte, unlike the Enter-terminated commands in
+[Serial controls](#serial-controls) below. They're implemented as a
+`Serial.peek()`-based interceptor in `main.cpp` that only consumes bytes
+matching these reserved keys, leaving everything else untouched for
+`Controls.cpp`'s own line-buffered parser — verified not to collide with
+any existing single-char or word command (`n,p,o,x,+,-,m,d,h,g,r,b,a,c,v`,
+`effects`/`overlays`/`status`). Note: `s` was intentionally **not** used
+for motor-stop (as originally planned) because it's the first letter of
+`status`, and a byte-level interceptor on `s` would break that command;
+`k` is used instead.
+
+### Safety behavior
+
+- No command leaves the motor energized indefinitely by design: timed
+  helpers (`motorForwardMs`/`motorReverseMs`) always stop themselves;
+  `IDLE_SWAY`'s longest energized segment is 120ms; a generic 2s
+  max-runtime safety net backstops all behaviors regardless of mode.
+- `k` is a full emergency stop from any state (raw drive or any behavior).
+- No current-sensing or thermal-monitoring hardware exists — over-current,
+  stall, and thermal conditions cannot be detected in software.
+
+### Current limitations
+
+- No PWM/speed control yet.
+- The motor sometimes needs a brief manual assist to start from a dead
+  stop; not attributed to a confirmed root cause (see
+  `docs/DRV8833_MOTOR_BRINGUP.md` section 8 — UVLO is a plausible
+  hypothesis, not a proven one).
+- `motorBrake()` is implemented and was electrically validated during
+  bring-up but is not yet used by any behavior.
+
+### Power
+
+The DRV8833 is currently powered from the **ESP32's own 3.3V rail**. This
+is acceptable for verified bench bring-up only and should **not** be
+treated as the final production power architecture. Before sustained or
+production use, evaluate a dedicated external motor supply (sized for the
+motor's actual current draw, including startup inrush) with a common
+ground shared with the ESP32 — see
+[Safety warnings](#safety-warnings) below.
 
 ## Architecture: base effects vs. audio overlays
 
@@ -585,3 +712,9 @@ All constants below are in `include/Config.h`.
   ESP32 GND pin. Do not float the grounds.
 - The software power limit above is a bring-up safety aid, not a
   substitute for this.
+- **The DRV8833 motor driver is currently powered from the ESP32's 3.3V
+  rail** — a logic supply, not a motor supply, with limited current
+  headroom. This is acceptable for verified bench bring-up only (see
+  [Motor driver (DRV8833)](#motor-driver-drv8833) above); evaluate a
+  dedicated external motor supply with common ground before any
+  sustained or production use.

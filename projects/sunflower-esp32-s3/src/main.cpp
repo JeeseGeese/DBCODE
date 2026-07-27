@@ -9,6 +9,7 @@
 #include "Controls.h"
 #include "LedEffects.h"
 #include "VisualCue.h"
+#include "MotorDriver.h"
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -47,6 +48,11 @@ static void applyPowerLimit(RGB8 *buf) {
 }
 
 void setup() {
+  // Drive the motor pins to a known LOW/stopped state as the very first
+  // action in setup(), before Serial/LED/mic init, so they never float.
+  // Does not touch any LED/mic/button pin or timing.
+  initMotor();
+
   Serial.begin(115200);
   uint32_t waitStart = millis();
   while (!Serial && (millis() - waitStart) < 3000) delay(10);
@@ -71,15 +77,50 @@ void setup() {
 
   initControls();
 
+  // Small one-shot startup verification: confirms the DRV8833 responds in
+  // both directions right after the rest of Sunflower has initialized,
+  // then leaves the motor stopped until commanded by future application
+  // code.
+  motorForwardMs(250);
+  delay(250);
+  motorReverseMs(250);
+  Serial.println(F("[MOTOR] Initialization successful."));
+  Serial.println(F("[MOTOR] Serial commands: 'f' = forward, 'k' = stop (single key, no Enter needed)"));
+
   lastFrameTime = millis();
   lastFpsReportTime = millis();
 
   Serial.println(F("[SYSTEM] Ready"));
 }
 
+// Live motor serial commands: 'f' = forward (continuous), 'k' = stop.
+// Controls.cpp's pollSerialCommands() (called via updateControls() below)
+// owns all other serial input via its own line buffer, so this peeks the
+// next byte and only consumes it -- via Serial.read() -- when it matches
+// one of these two reserved keys; every other byte is left untouched on
+// the stream for Controls.cpp to read normally. 'f'/'k' were checked
+// against Controls.cpp's full command set (n,p,o,x,+,-,m,d,h,g,r,b,a,c,v,
+// plus the word commands "effects"/"overlays"/"status") and don't collide
+// with any of it. Unlike Controls.cpp's line-buffered commands, these fire
+// immediately on the single byte -- no Enter needed.
+static void pollMotorSerialCommands() {
+  if (Serial.available() <= 0) return;
+  int c = Serial.peek();
+  if (c == 'f' || c == 'F') {
+    Serial.read();
+    motorForward();
+    Serial.println(F("[MOTOR] Forward"));
+  } else if (c == 'k' || c == 'K') {
+    Serial.read();
+    motorStop();
+    Serial.println(F("[MOTOR] Stop"));
+  }
+}
+
 void loop() {
   unsigned long now = millis();
 
+  pollMotorSerialCommands();
   updateControls(now);   // buttons + serial, non-blocking
   updateAudioAnalyzer();  // I2S capture + AudioFeatures; runs every iteration regardless of mute/frame pacing
 

@@ -9,7 +9,15 @@
 #include "Controls.h"
 #include "LedEffects.h"
 #include "VisualCue.h"
+#include "MotorBehavior.h"
 #include "MotorDriver.h"
+
+// Temporary test-only serial interface for MotorBehavior (Task 5 of the
+// motor bring-up plan, see docs/DRV8833_MOTOR_BRINGUP.md section 13). Set
+// to 0 to compile out the '0'/'1'/'?' handling below entirely -- the
+// underlying MotorBehavior module itself is unconditional production code
+// and is unaffected by this flag.
+#define ENABLE_MOTOR_BEHAVIOR_TEST 1
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -87,6 +95,14 @@ void setup() {
   Serial.println(F("[MOTOR] Initialization successful."));
   Serial.println(F("[MOTOR] Serial commands: 'f' = forward, 'k' = stop (single key, no Enter needed)"));
 
+  // MotorBehavior starts in OFF (motor stopped) and is never auto-enabled
+  // here -- IDLE_SWAY must be explicitly selected (see
+  // ENABLE_MOTOR_BEHAVIOR_TEST commands below).
+  initMotorBehavior();
+#if ENABLE_MOTOR_BEHAVIOR_TEST
+  Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
+#endif
+
   lastFrameTime = millis();
   lastFpsReportTime = millis();
 
@@ -103,6 +119,15 @@ void setup() {
 // plus the word commands "effects"/"overlays"/"status") and don't collide
 // with any of it. Unlike Controls.cpp's line-buffered commands, these fire
 // immediately on the single byte -- no Enter needed.
+//
+// 'k' also calls stopMotorBehavior() (not just motorStop()) so it is a
+// true immediate-stop for both raw MotorDriver use and any active
+// MotorBehavior -- this is a deliberate substitute for the 's' key
+// originally requested for MotorBehavior's emergency stop: 's' is the
+// first letter of Controls.cpp's existing "status" word-command, and this
+// peek-based interceptor would otherwise steal that leading byte and break
+// "status" while ENABLE_MOTOR_BEHAVIOR_TEST is on. 'k' was already
+// established, unused elsewhere, and reusing it avoids that regression.
 static void pollMotorSerialCommands() {
   if (Serial.available() <= 0) return;
   int c = Serial.peek();
@@ -112,15 +137,44 @@ static void pollMotorSerialCommands() {
     Serial.println(F("[MOTOR] Forward"));
   } else if (c == 'k' || c == 'K') {
     Serial.read();
-    motorStop();
+    stopMotorBehavior();
     Serial.println(F("[MOTOR] Stop"));
+    Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
   }
 }
+
+#if ENABLE_MOTOR_BEHAVIOR_TEST
+// Temporary test-only MotorBehavior serial commands: '0' = OFF,
+// '1' = IDLE_SWAY, '?' = print state. Same peek-and-consume-one-byte
+// pattern as pollMotorSerialCommands() above, checked against the same
+// Controls.cpp command set plus 'f'/'k' -- '0', '1', and '?' collide with
+// none of it.
+static void pollMotorBehaviorTestCommands() {
+  if (Serial.available() <= 0) return;
+  int c = Serial.peek();
+  if (c == '0') {
+    Serial.read();
+    setMotorBehavior(MotorBehaviorMode::OFF);
+    Serial.println(F("[MOTOR BEHAVIOR] OFF"));
+  } else if (c == '1') {
+    Serial.read();
+    setMotorBehavior(MotorBehaviorMode::IDLE_SWAY);
+    Serial.println(F("[MOTOR BEHAVIOR] IDLE_SWAY"));
+  } else if (c == '?') {
+    Serial.read();
+    printMotorBehaviorDebugState();
+  }
+}
+#endif
 
 void loop() {
   unsigned long now = millis();
 
   pollMotorSerialCommands();
+#if ENABLE_MOTOR_BEHAVIOR_TEST
+  pollMotorBehaviorTestCommands();
+#endif
+  updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons + serial, non-blocking
   updateAudioAnalyzer();  // I2S capture + AudioFeatures; runs every iteration regardless of mute/frame pacing
 

@@ -517,11 +517,75 @@ bool isMotorPriorityActive();
   instead, extending the existing `0`/`1` `MotorBehavior`-test numeric
   convention (see section 13) rather than introducing a new letter.
 
-This module is diagnostic-only. Physical movement from the `2` test has
-not been confirmed -- pending observation. If it *does* reproduce
-reliable movement, that confirms the boot-vs-runtime peripheral-activity
-hypothesis and motivates integrating `MotorPriorityMode` into repeating
-`IDLE_SWAY` next. If it does *not*, the peripheral-suspension hypothesis
-is ruled out and the remaining investigation should move to motor
-voltage/supply or mechanical causes, per the engineering conclusion
-above.
+This module is diagnostic-only.
+
+**Physical result:** the `2` test still buzzes without moving from a
+dead stop -- recreating the boot-time quiet state (LEDs
+muted+suspended, audio suspended) did **not** restore reliable startup.
+This rules out the peripheral-suspension hypothesis: it is not LED
+rendering, audio processing, or general loop activity competing for
+resources. However: if the output gear receives a small manual flick by
+hand, the motor begins moving. This points toward a mechanical
+explanation -- static friction, gearbox position sensitivity, mechanical
+preload, or insufficient breakaway torque at the current drive -- rather
+than a remaining electrical or software timing issue. See section 19 for
+the diagnostic built to test this directly.
+
+## 19. Aggressive breakaway test (`MOTOR BREAKAWAY`, serial command `3`)
+
+Motivated by the `2` test's physical result above: the motor moves once
+manually flicked, but not from a commanded dead stop. This test attempts
+to reproduce that manual flick in software rather than electrically --
+**it does not increase electrical stall torque**. `digitalWrite`
+HIGH/LOW is already full-power drive, identical to every other motor
+test in this project (the `2` test, `IDLE_SWAY`, the boot-time
+verification); there is no higher electrical setting to reach for.
+
+**Mechanism:** a brief opposite-direction "jolt" (150ms) immediately
+before the main drive pulse, intended to take up gear lash or unseat a
+sticky gearbox position -- approximating what a manual flick does --
+followed by a long (1500ms) full-power drive pulse in the intended
+direction, long enough that any resulting movement is easy to observe.
+Uses `MotorPriorityMode` exactly as the `2` test does (LEDs muted +
+suspended, audio suspended, buttons/serial/emergency-stop still live);
+mutually exclusive with the `2` test at the code level (each refuses to
+start while the other is active), since both drive the motor directly
+through the same `MotorPriorityMode` request.
+
+**Sequence** (repeated for 2 complete cycles):
+
+```
+Prepare MotorPriorityMode -> wait until READY
+  Reverse 150ms (forward-cycle jolt) -> Stop 100ms
+  Forward 1500ms (full drive)        -> Stop 500ms
+  Forward 150ms (reverse-cycle jolt) -> Stop 100ms
+  Reverse 1500ms (full drive)        -> Stop 500ms
+[repeat once more for cycle 2]
+Stop -> release MotorPriorityMode -> MotorBehavior back to OFF
+```
+
+`motorStop()` is called between every single direction change (no
+instantaneous polarity reversal anywhere in the sequence), and the
+1500ms main pulse stays well under the existing 2000ms max-energized
+safeguard (a local defensive backstop mirrors that safeguard here too,
+though it should never trigger given the timing above).
+
+**Interpretation guidance:**
+
+- Success (movement after the jolt+long-pulse combination) would
+  indicate the issue is genuinely about overcoming static
+  friction/breakaway resistance from a dead stop, not insufficient
+  drive.
+- **Repeated buzzing without movement, even with the jolt, remains a
+  hardware/mechanical finding -- not a reason to lengthen the pulse
+  further.** There is no electrical dial left to turn; digitalWrite
+  HIGH/LOW has been full drive at 120ms, 300ms, 500ms, and now a
+  150ms-jolt + 1500ms-drive combination.
+- **The user must not touch or flick the gear while the motor is
+  energized** -- this test exists specifically to determine whether
+  *software* can reproduce the effect of a manual flick; manually
+  assisting it during the test would defeat that purpose and risks
+  injury/damage.
+
+Physical result of this test has not yet been confirmed -- pending
+observation.

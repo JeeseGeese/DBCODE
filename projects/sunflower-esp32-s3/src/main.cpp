@@ -106,6 +106,7 @@ void setup() {
 #if ENABLE_MOTOR_BEHAVIOR_TEST
   Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
   Serial.println(F("[MOTOR PRIORITY TEST] Serial command: '2' = boot-equivalent runtime motor priority test"));
+  Serial.println(F("[MOTOR BREAKAWAY] Serial command: '3' = aggressive breakaway test (jolt + 1500ms drive x2 cycles)"));
 #endif
 
   lastFrameTime = millis();
@@ -113,6 +114,26 @@ void setup() {
 
   Serial.println(F("[SYSTEM] Ready"));
 }
+
+// Forward declaration: BreakawayPhase/breakawayPhase (full MOTOR BREAKAWAY
+// TEST implementation is below, after MOTOR PRIORITY TEST) is needed here
+// because the two tests are mutually exclusive with each other --
+// startPriorityTest() below checks breakawayPhase, and startBreakawayTest()
+// (further down) checks priorityTestPhase right back.
+enum class BreakawayPhase {
+  IDLE,
+  PREPARING,
+  FORWARD_JOLT,        // reverse 150ms -- opposite-direction jolt for the forward cycle
+  FORWARD_JOLT_STOP,   // stop 100ms
+  FORWARD_DRIVE,       // forward 1500ms -- full digital drive
+  FORWARD_DRIVE_STOP,  // stop 500ms
+  REVERSE_JOLT,        // forward 150ms -- opposite-direction jolt for the reverse cycle
+  REVERSE_JOLT_STOP,   // stop 100ms
+  REVERSE_DRIVE,       // reverse 1500ms -- full digital drive
+  REVERSE_DRIVE_STOP,  // stop 500ms
+  RELEASING,
+};
+BreakawayPhase breakawayPhase = BreakawayPhase::IDLE;
 
 // BEGIN MOTOR PRIORITY TEST
 // One-shot, non-blocking, boot-equivalent runtime test: requests
@@ -150,7 +171,9 @@ const char *priorityTestPhaseName(PriorityTestPhase p) {
 }
 
 void startPriorityTest() {
-  if (priorityTestPhase != PriorityTestPhase::IDLE) return;  // already running -- ignore re-trigger
+  // Mutually exclusive with the '3' breakaway test (defined below) -- both
+  // use MotorPriorityMode and drive the motor directly.
+  if (priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE) return;
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
   Serial.println(F("[MOTOR PRIORITY TEST] Preparing"));
   requestMotorPriority();
@@ -217,9 +240,207 @@ void updatePriorityTest() {
 }
 // END MOTOR PRIORITY TEST
 
+// BEGIN MOTOR BREAKAWAY TEST
+// Temporary diagnostic, separate from and does not replace the MOTOR
+// PRIORITY TEST above ('2'). Physical result that motivated this: the
+// runtime priority test still buzzes without moving from a dead stop, but
+// a small manual flick of the output gear lets it start -- consistent
+// with static friction, gearbox position sensitivity, mechanical
+// preload, or insufficient breakaway torque, not an electrical problem.
+// This test does NOT increase electrical stall torque -- digitalWrite
+// HIGH/LOW is already full-power drive, same as every other test in this
+// project. It attempts to reproduce the manual flick in software: a brief
+// opposite-direction "jolt" to take up gear lash / unseat a sticky
+// position, followed by a long (1500ms) full-power drive pulse in the
+// intended direction so any resulting movement is easy to see. Repeated
+// buzzing without movement even with the jolt remains a hardware/
+// mechanical finding, not a reason to lengthen the pulse further. See
+// docs/DRV8833_MOTOR_BRINGUP.md.
+//
+// Uses MotorPriorityMode exactly as the '2' test does (LEDs muted +
+// suspended, audio processing suspended, buttons/serial/emergency-stop
+// still live) -- mutually exclusive with the '2' test (see
+// startBreakawayTest()/startPriorityTest()'s guards). BreakawayPhase and
+// breakawayPhase itself are forward-declared above, before MOTOR PRIORITY
+// TEST, since that test's start function needs to check this one's state.
+constexpr uint32_t BREAKAWAY_JOLT_MS = 150;
+constexpr uint32_t BREAKAWAY_JOLT_STOP_MS = 100;
+constexpr uint32_t BREAKAWAY_DRIVE_MS = 1500;  // below the 2000ms max-energized safeguard
+constexpr uint32_t BREAKAWAY_DRIVE_STOP_MS = 500;
+constexpr int BREAKAWAY_TOTAL_CYCLES = 2;
+// Local defensive backstop mirroring MotorBehavior.cpp's IDLE_SWAY safety
+// net (that one is private to MotorBehavior.cpp and not reusable here) --
+// should never actually trigger given BREAKAWAY_DRIVE_MS=1500 is already
+// well under this, but guards against any future edit to the timing
+// constants above accidentally exceeding it.
+constexpr uint32_t BREAKAWAY_MAX_ENERGIZED_MS = 2000;
+
+// breakawayPhase itself is declared above (forward declaration before
+// MOTOR PRIORITY TEST) -- only its supporting state lives here.
+unsigned long breakawayPhaseStartMs = 0;
+unsigned long breakawayEnergizedSinceMs = 0;  // 0 when not energized
+int breakawayCycle = 0;                        // 1 or 2 while running
+
+const char *breakawayPhaseName(BreakawayPhase p) {
+  switch (p) {
+    case BreakawayPhase::IDLE: return "IDLE";
+    case BreakawayPhase::PREPARING: return "PREPARING";
+    case BreakawayPhase::FORWARD_JOLT: return "FORWARD_JOLT";
+    case BreakawayPhase::FORWARD_JOLT_STOP: return "FORWARD_JOLT_STOP";
+    case BreakawayPhase::FORWARD_DRIVE: return "FORWARD_DRIVE";
+    case BreakawayPhase::FORWARD_DRIVE_STOP: return "FORWARD_DRIVE_STOP";
+    case BreakawayPhase::REVERSE_JOLT: return "REVERSE_JOLT";
+    case BreakawayPhase::REVERSE_JOLT_STOP: return "REVERSE_JOLT_STOP";
+    case BreakawayPhase::REVERSE_DRIVE: return "REVERSE_DRIVE";
+    case BreakawayPhase::REVERSE_DRIVE_STOP: return "REVERSE_DRIVE_STOP";
+    case BreakawayPhase::RELEASING: return "RELEASING";
+  }
+  return "UNKNOWN";
+}
+
+void breakawayForward() {
+  motorForward();
+  breakawayEnergizedSinceMs = millis();
+}
+void breakawayReverse() {
+  motorReverse();
+  breakawayEnergizedSinceMs = millis();
+}
+void breakawayStop() {
+  motorStop();
+  breakawayEnergizedSinceMs = 0;
+}
+
+void startBreakawayTest() {
+  // Mutually exclusive with the '2' priority test -- both use
+  // MotorPriorityMode and drive the motor directly; running either while
+  // the other is active would fight over both.
+  if (breakawayPhase != BreakawayPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE) return;
+  setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
+  Serial.println(F("[MOTOR BREAKAWAY] Preparing"));
+  requestMotorPriority();
+  breakawayCycle = 1;
+  breakawayPhase = BreakawayPhase::PREPARING;
+  breakawayPhaseStartMs = millis();
+}
+
+// Cancelable at every phase via 'k' -- see pollMotorSerialCommands() below.
+// motorStop() (via breakawayStop()/releaseMotorPriorityImmediately(),
+// which itself calls motorStop() first) always happens before peripherals
+// are restored.
+void cancelBreakawayTest() {
+  if (breakawayPhase == BreakawayPhase::IDLE) return;
+  breakawayStop();
+  releaseMotorPriorityImmediately();  // stops the motor (redundant with above, harmless) then restores LEDs/audio
+  breakawayPhase = BreakawayPhase::IDLE;
+  breakawayEnergizedSinceMs = 0;
+  Serial.println(F("[MOTOR BREAKAWAY] Cancelled"));
+}
+
+void updateBreakawayTest() {
+  if (breakawayPhase == BreakawayPhase::IDLE) return;
+  unsigned long now = millis();
+  unsigned long elapsed = now - breakawayPhaseStartMs;
+
+  // Defensive backstop -- see BREAKAWAY_MAX_ENERGIZED_MS above.
+  if (breakawayEnergizedSinceMs != 0 && (now - breakawayEnergizedSinceMs) >= BREAKAWAY_MAX_ENERGIZED_MS) {
+    Serial.println(F("[MOTOR BREAKAWAY] Safety: max energized runtime exceeded -- cancelling"));
+    cancelBreakawayTest();
+    return;
+  }
+
+  switch (breakawayPhase) {
+    case BreakawayPhase::IDLE:
+      break;
+    case BreakawayPhase::PREPARING:
+      if (isMotorPriorityReady()) {
+        Serial.printf("[MOTOR BREAKAWAY] Cycle %d forward jolt\n", breakawayCycle);
+        breakawayReverse();  // opposite-direction jolt for the forward cycle
+        breakawayPhase = BreakawayPhase::FORWARD_JOLT;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::FORWARD_JOLT:
+      if (elapsed >= BREAKAWAY_JOLT_MS) {
+        breakawayStop();
+        breakawayPhase = BreakawayPhase::FORWARD_JOLT_STOP;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::FORWARD_JOLT_STOP:
+      if (elapsed >= BREAKAWAY_JOLT_STOP_MS) {
+        Serial.printf("[MOTOR BREAKAWAY] Cycle %d forward drive\n", breakawayCycle);
+        breakawayForward();
+        breakawayPhase = BreakawayPhase::FORWARD_DRIVE;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::FORWARD_DRIVE:
+      if (elapsed >= BREAKAWAY_DRIVE_MS) {
+        breakawayStop();
+        breakawayPhase = BreakawayPhase::FORWARD_DRIVE_STOP;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::FORWARD_DRIVE_STOP:
+      if (elapsed >= BREAKAWAY_DRIVE_STOP_MS) {
+        Serial.printf("[MOTOR BREAKAWAY] Cycle %d reverse jolt\n", breakawayCycle);
+        breakawayForward();  // opposite-direction jolt for the reverse cycle
+        breakawayPhase = BreakawayPhase::REVERSE_JOLT;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::REVERSE_JOLT:
+      if (elapsed >= BREAKAWAY_JOLT_MS) {
+        breakawayStop();
+        breakawayPhase = BreakawayPhase::REVERSE_JOLT_STOP;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::REVERSE_JOLT_STOP:
+      if (elapsed >= BREAKAWAY_JOLT_STOP_MS) {
+        Serial.printf("[MOTOR BREAKAWAY] Cycle %d reverse drive\n", breakawayCycle);
+        breakawayReverse();
+        breakawayPhase = BreakawayPhase::REVERSE_DRIVE;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::REVERSE_DRIVE:
+      if (elapsed >= BREAKAWAY_DRIVE_MS) {
+        breakawayStop();
+        breakawayPhase = BreakawayPhase::REVERSE_DRIVE_STOP;
+        breakawayPhaseStartMs = now;
+      }
+      break;
+    case BreakawayPhase::REVERSE_DRIVE_STOP:
+      if (elapsed >= BREAKAWAY_DRIVE_STOP_MS) {
+        if (breakawayCycle < BREAKAWAY_TOTAL_CYCLES) {
+          breakawayCycle++;
+          Serial.printf("[MOTOR BREAKAWAY] Cycle %d forward jolt\n", breakawayCycle);
+          breakawayReverse();
+          breakawayPhase = BreakawayPhase::FORWARD_JOLT;
+          breakawayPhaseStartMs = now;
+        } else {
+          releaseMotorPriority();  // starts MotorPriorityMode's own 100ms settle wait
+          breakawayPhase = BreakawayPhase::RELEASING;
+          breakawayPhaseStartMs = now;
+        }
+      }
+      break;
+    case BreakawayPhase::RELEASING:
+      if (!isMotorPriorityActive()) {  // MotorPriorityMode's RELEASING->IDLE transition completed
+        setMotorBehavior(MotorBehaviorMode::OFF);
+        Serial.println(F("[MOTOR BREAKAWAY] Complete"));
+        breakawayPhase = BreakawayPhase::IDLE;
+      }
+      break;
+  }
+}
+// END MOTOR BREAKAWAY TEST
+
 // Live motor + MotorBehavior-test serial commands: 'f' = forward
-// (continuous), 'k' = stop, '0'/'1'/'2'/'?' = MotorBehavior test commands
-// (see below). Controls.cpp's pollSerialCommands() (called via
+// (continuous), 'k' = stop, '0'/'1'/'2'/'3'/'?' = MotorBehavior test
+// commands (see below). Controls.cpp's pollSerialCommands() (called via
 // updateControls() below) owns all other serial input via its own line
 // buffer, so this peeks the next byte and only consumes it -- via
 // Serial.read() -- when it matches one of these reserved keys; every
@@ -259,7 +480,10 @@ void updatePriorityTest() {
 // Controls.cpp's existing "previous base effect" single-char command
 // (case 'p': advanceBaseEffect(-1)), and this interceptor would otherwise
 // steal that byte and break it. '2' extends the existing 0/1
-// MotorBehavior-test numeric convention instead.
+// MotorBehavior-test numeric convention instead. '3' (checked against the
+// full command map above, including 'f'/'k'/'0'/'1'/'2'/'?' already
+// reserved here -- free) continues that same convention for the MOTOR
+// BREAKAWAY TEST.
 static void pollMotorSerialCommands() {
   while (Serial.available() > 0) {
     int c = Serial.peek();
@@ -270,6 +494,7 @@ static void pollMotorSerialCommands() {
     } else if (c == 'k' || c == 'K') {
       Serial.read();
       cancelPriorityTest();
+      cancelBreakawayTest();
       stopMotorBehavior();
       Serial.println(F("[MOTOR] Stop"));
       Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
@@ -286,11 +511,17 @@ static void pollMotorSerialCommands() {
     } else if (c == '2') {
       Serial.read();
       startPriorityTest();
+    } else if (c == '3') {
+      Serial.read();
+      startBreakawayTest();
     } else if (c == '?') {
       Serial.read();
       printMotorBehaviorDebugState();
       printMotorPriorityDebugState();
       Serial.printf("[MOTOR PRIORITY TEST] phase=%s\n", priorityTestPhaseName(priorityTestPhase));
+      Serial.printf("[MOTOR BREAKAWAY] active=%d phase=%s cycle=%d elapsedMs=%lu\n",
+                    breakawayPhase != BreakawayPhase::IDLE ? 1 : 0, breakawayPhaseName(breakawayPhase),
+                    breakawayCycle, (unsigned long)(millis() - breakawayPhaseStartMs));
     }
 #endif
     else {
@@ -306,6 +537,7 @@ void loop() {
   updateMotorPowerGuard();     // non-blocking; must tick every iteration regardless of MotorBehavior mode
   updateMotorPriorityMode();   // non-blocking; must tick every iteration regardless of test state
   updatePriorityTest();        // non-blocking; no-op when the priority test isn't running
+  updateBreakawayTest();       // non-blocking; no-op when the breakaway test isn't running
   updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons + serial, non-blocking -- always runs, even during MotorPriorityMode,
                           // so buttons/serial/emergency-stop stay live (Task 3 requirement)

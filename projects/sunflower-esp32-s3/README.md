@@ -110,9 +110,13 @@ full digital motor command, so the difference isn't pulse duration; it's
 that LED rendering, microphone/audio processing, and normal loop activity
 are all continuously active during runtime but not during the boot pulse
 (see `docs/DRV8833_MOTOR_BRINGUP.md` section 17 for the exact boot
-ordering). `MotorPriorityMode` (below) is a temporary diagnostic layer
-built to test that hypothesis directly, before considering motor voltage,
-PWM, or mechanical changes.
+ordering). `MotorPriorityMode`'s `2` test (below) recreates that quiet
+state at runtime — **result: still buzzes without moving.** This rules
+out the peripheral-suspension hypothesis. However, a small manual flick
+of the output gear does let it start, pointing toward static friction,
+gearbox position sensitivity, or insufficient breakaway torque rather
+than remaining electrical/software causes. `MotorPriorityMode`'s `3`
+test attempts to reproduce that flick in software — see below.
 
 **Verified wiring** (J2-bridged DRV8833 board):
 
@@ -265,18 +269,62 @@ bool isMotorPriorityActive();
 - The one-shot **boot-equivalent runtime test** (`2`, see below)
   reproduces the exact 250ms/250ms/250ms forward/stop/reverse timing
   already proven to work at boot, inside `MotorPriorityMode`, without yet
-  wiring it into repeating `IDLE_SWAY`.
+  wiring it into repeating `IDLE_SWAY`. **Result: still buzzes, no
+  movement** — rules out the peripheral-suspension hypothesis. See the
+  boot-vs-runtime note above and `docs/DRV8833_MOTOR_BRINGUP.md` section
+  18 for the full writeup.
+
+### MOTOR BREAKAWAY — aggressive mechanical breakaway test (serial command `3`)
+
+**Diagnostic only, does not replace `2`.** Motivated by `2`'s physical
+result: the motor moves once the output gear is manually flicked, but
+not from a commanded dead stop — pointing toward static friction,
+gearbox position sensitivity, or insufficient breakaway torque rather
+than a remaining electrical/software cause. This test attempts to
+reproduce that manual flick in software: a brief opposite-direction
+"jolt" to take up gear lash / unseat a sticky position, followed by a
+long full-power drive pulse so any resulting movement is easy to see.
+**This does not increase electrical stall torque** — `digitalWrite`
+HIGH/LOW is already full-power drive at every duration tested (120ms,
+300ms, 500ms, and now this jolt+long-pulse combination); there is no
+higher electrical setting to reach for. See
+`docs/DRV8833_MOTOR_BRINGUP.md` section 19.
+
+Uses `MotorPriorityMode` exactly as `2` does (LEDs muted+suspended, audio
+suspended, buttons/serial/`k` still live) — mutually exclusive with `2`
+at the code level, since both drive the motor directly through the same
+`MotorPriorityMode` request.
+
+```
+Prepare MotorPriorityMode -> wait until READY
+  Reverse 150ms (forward-cycle jolt) -> Stop 100ms
+  Forward 1500ms (full drive)        -> Stop 500ms
+  Forward 150ms (reverse-cycle jolt) -> Stop 100ms
+  Reverse 1500ms (full drive)        -> Stop 500ms
+[repeat once more -- 2 complete cycles total]
+Stop -> release MotorPriorityMode -> MotorBehavior back to OFF
+```
+
+`motorStop()` between every direction change (no instantaneous polarity
+reversal), 1500ms main pulse well under the existing 2000ms
+max-energized safeguard (a local defensive backstop mirrors that
+safeguard here too). **Repeated buzzing without movement, even with the
+jolt, is a hardware/mechanical finding — not a reason to lengthen the
+pulse further.** Do not touch or flick the gear while the motor is
+energized during this test — it exists specifically to determine whether
+software alone can reproduce the effect of a manual flick.
 
 ### Serial commands
 
 | Command | Action |
 |---|---|
 | `f` | `MotorDriver` forward (continuous, fires immediately, no Enter needed) |
-| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority test; releases/restores `MotorPowerGuard` |
+| `k` | Immediate stop — raw `MotorDriver` hold, any active `MotorBehavior` (forces mode to `OFF`), and any active `MotorPriorityMode`/priority test/breakaway test; releases/restores `MotorPowerGuard` |
 | `0` | `MotorBehavior` OFF *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`, on by default)* — also releases `MotorPowerGuard` immediately |
 | `1` | `MotorBehavior` IDLE_SWAY *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `2` | Boot-equivalent `MotorPriorityMode` runtime test (Preparing → Forward 250ms → Stop 250ms → Reverse 250ms → Stop → release → back to `MotorBehavior` OFF) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard` state, `MotorPriorityMode` state + LED/audio-suspended flags, and the priority test's own phase *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `3` | Aggressive breakaway test: jolt + 1500ms full drive, 2 cycles (see MOTOR BREAKAWAY above) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard` state, `MotorPriorityMode` state + LED/audio-suspended flags, the priority test's phase, and the breakaway test's active/phase/cycle/elapsed *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
 These fire on the single byte, unlike the Enter-terminated commands in
 [Serial controls](#serial-controls) below. They're implemented as a
@@ -288,15 +336,20 @@ any existing single-char or word command (`n,p,o,x,+,-,m,d,h,g,r,b,a,c,v`,
 originally planned, both to avoid stealing bytes from existing commands:
 `s` → `k` for motor-stop (`s` is the first letter of `status`), and `p` →
 `2` for the boot-equivalent test (`p` is Controls.cpp's existing
-"previous base effect" command).
+"previous base effect" command). `3` (breakaway test) was checked against
+the full command map and has no collision.
 
 ### Safety behavior
 
 - No command leaves the motor energized indefinitely by design: timed
   helpers (`motorForwardMs`/`motorReverseMs`) always stop themselves;
   `IDLE_SWAY`'s longest energized segment is 500ms; a generic 2s
-  max-runtime safety net backstops all behaviors regardless of mode.
-- `k` is a full emergency stop from any state (raw drive or any behavior).
+  max-runtime safety net backstops all behaviors regardless of mode. The
+  MOTOR BREAKAWAY test's longest single energized segment is 1500ms
+  (`3`'s main drive pulse), still well under that 2s ceiling; it carries
+  its own local defensive backstop mirroring the same safeguard.
+- `k` is a full emergency stop from any state (raw drive or any behavior,
+  including the priority test and breakaway test).
 - No current-sensing or thermal-monitoring hardware exists — over-current,
   stall, and thermal conditions cannot be detected in software.
 

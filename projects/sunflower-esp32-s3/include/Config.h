@@ -280,3 +280,39 @@ constexpr uint8_t VISUAL_CUE_BRIGHTNESS_RAW = 115; // ~45%
 // ============================================================================
 constexpr uint32_t AUTO_SHOWCASE_EFFECT_DURATION_MS = 15000; // how long each real effect runs before advancing
 constexpr uint32_t AUTO_SHOWCASE_TRANSITION_MS = 1500;       // crossfade duration between effects
+
+// ============================================================================
+// Expressive motion (see include/ExpressiveMotion.h and
+// docs/EXPRESSIVE_MOTION_DEVELOPMENT.md) -- development-branch feature,
+// disabled by default (ExpressiveMotionMode::DISABLED at boot). All
+// timings deliberately conservative for initial physical validation; not
+// yet tuned against the actual mechanism/belt.
+// ============================================================================
+
+// --- IDLE_ALIVE: gentle randomized idle behavior ---
+constexpr uint32_t MOTION_PULSE_MIN_MS = 100;         // one short movement, lower bound
+constexpr uint32_t MOTION_PULSE_MAX_MS = 220;         // one short movement, upper bound -- well under the 2000ms safeguard
+constexpr uint32_t MOTION_REST_MIN_MS = 900;          // minimum rest between movements
+constexpr uint32_t MOTION_REST_MAX_MS = 3000;         // typical maximum rest between movements
+constexpr uint32_t MOTION_LONG_REST_MIN_MS = 4000;    // occasional longer pause, lower bound
+constexpr uint32_t MOTION_LONG_REST_MAX_MS = 7000;    // occasional longer pause, upper bound
+constexpr float MOTION_LONG_REST_CHANCE = 0.15f;      // fraction of idle cycles that use the long-rest range instead
+constexpr float MOTION_CURIOUS_CHANCE = 0.20f;        // fraction of idle cycles that do a "curious" second pulse
+constexpr uint32_t MOTION_INTRA_PULSE_STOP_MS = 200;  // brief full stop between a curious double-movement's two pulses
+constexpr uint8_t MOTION_MAX_CONSECUTIVE_SAME_DIR = 2; // never more than this many same-direction pulses in a row
+
+// --- AUDIO_REACTIVE: activity bands (hysteresis) + cooldowns ---
+// Based on AudioFeatures.envelope (already attack/release-smoothed, 0..1)
+// -- never raw per-sample audio. Enter/exit thresholds differ so the band
+// doesn't chatter right at a boundary.
+constexpr float MOTION_AUDIO_ACTIVE_ENTER = 0.20f;
+constexpr float MOTION_AUDIO_ACTIVE_EXIT = 0.12f;
+constexpr float MOTION_AUDIO_STRONG_ENTER = 0.55f;
+constexpr float MOTION_AUDIO_STRONG_EXIT = 0.40f;
+constexpr uint32_t MOTION_AUDIO_ACTIVE_COOLDOWN_MS = 700;  // min gap between ordinary audio-triggered movements
+constexpr uint32_t MOTION_AUDIO_STRONG_COOLDOWN_MS = 1400; // min gap between STRONG (two-pulse) reactions
+
+// --- Motion-motion LED brightness: reuses MotorPowerGuard's existing
+// DIM_DURING_MOTION test-level selection (see MotorPowerGuard.h) rather
+// than a separate constant -- "begin conservatively at the already
+// validated selected motion brightness" per the development plan.

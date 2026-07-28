@@ -2,6 +2,7 @@
 #include "AudioAnalyzer.h"
 #include "AudioVisualState.h"
 #include "AutoShowcase.h"
+#include "ExpressiveMotion.h"
 #include "VisualCue.h"
 #include <ctype.h>
 #include <string.h>
@@ -324,6 +325,7 @@ static void printHelp() {
   Serial.println(F("  effects  = list base effects"));
   Serial.println(F("  overlays = list audio overlays"));
   Serial.println(F("  status   = full system status"));
+  Serial.println(F("  motion [next|off|idle|audio|status|demo] = expressive motion (dev branch, see README)"));
   Serial.println(F("  g = [DIAGNOSTIC ONLY] force the enabled/green cue, no overlay state change"));
   Serial.println(F("  r = [DIAGNOSTIC ONLY] force the disabled/red cue, no overlay state change"));
   Serial.println(F("  b = [DIAGNOSTIC ONLY] toggle raw/debounced Button4 transition trace"));
@@ -388,6 +390,31 @@ void printStatus() {
   Serial.printf("  Button 4 debounce interval: %ums\n", (unsigned)BUTTON4_DEBOUNCE_MS);
 }
 
+// "motion" word command -- see include/ExpressiveMotion.h. `args` is
+// whatever follows "motion" in the line (leading spaces stripped below),
+// e.g. "" or "next" for a bare "motion", or "off"/"idle"/"audio"/"status"/
+// "demo" for "motion off" etc. Routed here from dispatchCommand() below,
+// which is itself fed one byte at a time by main.cpp's central serial
+// dispatcher via feedSerialByte() -- no new Serial reader is introduced.
+static void dispatchMotionCommand(const char *args) {
+  while (*args == ' ') args++;
+  if (*args == '\0' || strcasecmp(args, "next") == 0) {
+    cycleExpressiveMotionMode();
+  } else if (strcasecmp(args, "off") == 0) {
+    setExpressiveMotionMode(ExpressiveMotionMode::OFF);
+  } else if (strcasecmp(args, "idle") == 0) {
+    setExpressiveMotionMode(ExpressiveMotionMode::IDLE_ALIVE);
+  } else if (strcasecmp(args, "audio") == 0) {
+    setExpressiveMotionMode(ExpressiveMotionMode::AUDIO_REACTIVE);
+  } else if (strcasecmp(args, "status") == 0) {
+    printExpressiveMotionDebugState();
+  } else if (strcasecmp(args, "demo") == 0) {
+    startMotionDemo();
+  } else {
+    Serial.printf("[CMD] Unknown 'motion' subcommand '%s' -- try: motion [next|off|idle|audio|status|demo]\n", args);
+  }
+}
+
 static void dispatchCommand(const char *cmd) {
   size_t len = strlen(cmd);
   if (len == 1) {
@@ -430,6 +457,7 @@ static void dispatchCommand(const char *cmd) {
   if (strcasecmp(cmd, "effects") == 0) printEffectsList();
   else if (strcasecmp(cmd, "overlays") == 0) printOverlaysList();
   else if (strcasecmp(cmd, "status") == 0) printStatus();
+  else if (strncasecmp(cmd, "motion", 6) == 0 && (cmd[6] == '\0' || cmd[6] == ' ')) dispatchMotionCommand(cmd + 6);
   else Serial.printf("[CMD] Unknown command '%s' -- press 'h' for help\n", cmd);
 }
 

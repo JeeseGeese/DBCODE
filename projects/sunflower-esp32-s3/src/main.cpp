@@ -9,6 +9,7 @@
 #include "Controls.h"
 #include "LedEffects.h"
 #include "VisualCue.h"
+#include "ExpressiveMotion.h"
 #include "MotorBehavior.h"
 #include "MotorDriver.h"
 #include "MotorPowerGuard.h"
@@ -103,6 +104,7 @@ void setup() {
   initMotorPowerGuard();
   initMotorBehavior();
   initMotorPriorityMode();
+  initExpressiveMotion();  // resets to ExpressiveMotionMode::OFF -- user must explicitly enable
 #if ENABLE_MOTOR_BEHAVIOR_TEST
   Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
   Serial.println(F("[MOTOR PRIORITY TEST] Serial command: '2' = boot-equivalent runtime motor priority test"));
@@ -111,6 +113,7 @@ void setup() {
   Serial.println(F("[MOTOR+LED TEST] Serial command: '5' = experimental motor+dim-LED coexistence test (forward+reverse)"));
   Serial.println(F("[LED MAP] Serial command: '6' = LED index mapping tool (color test + interactive index walk)"));
   Serial.println(F("[AUDIO LOG] Serial command: '7' = toggle continuous audio serial output (default OFF)"));
+  Serial.println(F("[MOTION] Word commands: 'motion' = cycle mode, 'motion off/idle/audio/status/demo' -- see README"));
 #endif
 
   lastFrameTime = millis();
@@ -221,10 +224,10 @@ const char *priorityTestPhaseName(PriorityTestPhase p) {
 
 void startPriorityTest() {
   // Mutually exclusive with the '3' breakaway test, the '5' motor+LED
-  // coexistence test, and the '6' row test (all defined below) -- all four
-  // drive the motor and/or write LEDs directly.
+  // coexistence test, the '6' LED map, and expressive motion/'motion demo'
+  // (all defined below) -- all drive the motor and/or write LEDs directly.
   if (priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -368,11 +371,11 @@ void breakawayStop() {
 
 void startBreakawayTest() {
   // Mutually exclusive with the '2' priority test, the '5' motor+LED
-  // coexistence test, and the '6' row test -- all drive the motor and/or
-  // write LEDs directly; running more than one at a time would fight over
-  // both.
+  // coexistence test, the '6' LED map, and expressive motion/'motion demo'
+  // -- all drive the motor and/or write LEDs directly; running more than
+  // one at a time would fight over both.
   if (breakawayPhase != BreakawayPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -532,9 +535,9 @@ void updateBreakawayTest() {
 unsigned long motorLedTestPhaseStartMs = 0;
 
 void startMotorLedTest() {
-  // Mutually exclusive with '2'/'3'/'6' -- see their own guards above.
+  // Mutually exclusive with '2'/'3'/'6' and expressive motion -- see their own guards above.
   if (motorLedTestPhase != MotorLedTestPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
-      breakawayPhase != BreakawayPhase::IDLE || isLedMapActive()) {
+      breakawayPhase != BreakawayPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -689,9 +692,9 @@ void ledMapPrintCompletionReminder() {
 }
 
 void startLedMap() {
-  // Mutually exclusive with '2'/'3'/'5' -- see their own guards above.
+  // Mutually exclusive with '2'/'3'/'5' and expressive motion -- see their own guards above.
   if (isLedMapActive() || priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isExpressiveMotionMoving()) {
     return;
   }
   Serial.println(F("[LED MAP] COLOR TEST: RED"));
@@ -859,6 +862,17 @@ void updateLedMap() {
 }
 // END LED INDEX MAPPING TOOL
 
+// Implements ExpressiveMotion.h's forward-declared query -- see that
+// header's comment. True while any of the four motor/LED diagnostics is
+// active; ExpressiveMotion checks this before starting a movement or
+// 'motion demo', mirroring the mutual-exclusion checks the four
+// diagnostics' own start functions make against isExpressiveMotionMoving()
+// above.
+bool isAnyMotorDiagnosticActive() {
+  return priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
+         motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive();
+}
+
 // ============================================================================
 // Emergency-stop latch (see docs/DRV8833_MOTOR_BRINGUP.md, "command-5
 // emergency-stop investigation")
@@ -883,6 +897,7 @@ void serviceEmergencyStop() {
   cancelBreakawayTest();
   cancelMotorLedTest();
   cancelLedMap();
+  cancelExpressiveMotion();  // also forces expressive motion to DISABLED -- see its own comment
   stopMotorBehavior();
   motorStop();  // explicit backstop even though every path above already stops the motor via its own cancel
   clearPendingSerialLine();  // discard any word-command line interrupted mid-type by this 'k'
@@ -1037,6 +1052,7 @@ static void pollSerialDispatcher() {
       Serial.printf("[AUDIO STATUS] micReady=%d processingSuspended=%d overlayEnabled=%d logEnabled=%d\n",
                     isMicReady() ? 1 : 0, isAudioProcessingSuspended() ? 1 : 0, isAudioOverlayEnabled() ? 1 : 0,
                     isAudioLogEnabled() ? 1 : 0);
+      printExpressiveMotionDebugState();
       // Lightweight, permanent diagnostics (see the dispatcher's own
       // comment above) -- cheap counters/max-trackers, not per-frame
       // prints, so they don't perturb the timing they observe.
@@ -1062,6 +1078,16 @@ void loop() {
   updateBreakawayTest();       // non-blocking; no-op when the breakaway test isn't running
   updateMotorLedTest();        // non-blocking; no-op when the motor+LED coexistence test isn't running
   updateLedMap();              // non-blocking; no-op when the LED index mapping tool isn't running
+  // Expressive motion never runs concurrently with a motor/LED diagnostic
+  // -- pauseExpressiveMotion() releases the motor/MotorPowerGuard
+  // immediately if it happened to be mid-pulse and holds it there
+  // (re-rolling fresh idle timing) for as long as a diagnostic is active,
+  // matching every diagnostic's own isExpressiveMotionMoving() guard.
+  if (isAnyMotorDiagnosticActive()) {
+    pauseExpressiveMotion();
+  } else {
+    updateExpressiveMotion(now);  // non-blocking; no-op while ExpressiveMotionMode::OFF
+  }
   updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons -- non-blocking, always runs, even during MotorPriorityMode, so
                           // buttons/emergency-stop stay live (Task 3 requirement); serial is handled

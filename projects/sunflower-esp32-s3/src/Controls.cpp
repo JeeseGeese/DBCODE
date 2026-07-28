@@ -94,10 +94,18 @@ static ClickTracker modeClickTracker;
 // (never every loop) when toggled on via the 'b' serial command.
 static bool button4DebugEnabled = false;
 
-// Button4 is now a plain immediate toggle: no click-count/hold state
-// machine at all (an earlier single/double-click gesture architecture was
-// removed here -- Button4 is a dedicated ON/OFF button, and the LED Mode
-// button now handles overlay *mode* cycling instead).
+// Button4 is dual-purpose: a short press (release before
+// BUTTON4_LONG_PRESS_MS) toggles the audio-reactive LED overlay -- the
+// original single-purpose behavior, preserved exactly, just now fired on
+// RELEASE instead of press so it can be suppressed if a long press
+// occurs. A press held past the threshold instead toggles expressive
+// audio-reactive motor movement, firing once on threshold crossing (not
+// on release), so holding longer never fires it twice and the
+// short-press action never also fires on release afterward. (An earlier
+// single/double-click gesture architecture was removed from this button
+// entirely -- the LED Mode button handles overlay *mode* cycling.)
+static unsigned long button4PressStartMs = 0;
+static bool button4LongPressFired = false;
 
 // Boot-arming guard: if GPIO5 is LOW at boot (observed on real hardware --
 // a wiring/short issue, not something firmware can fix), the debounce
@@ -257,11 +265,53 @@ static void handleBrightnessButton() {
   if (buttonPressedEdge(brightnessButton)) brightnessUp();
 }
 
-// Button4 is a dedicated, immediate audio-overlay ON/OFF button: no
-// click-count, double-click, or hold detection of any kind. The toggle
-// fires on the debounced PRESS edge itself, so a sustained hold produces
-// exactly one action (the edge only fires once, on HIGH->LOW) and release
-// does nothing beyond ordinary debounce bookkeeping.
+// Button4 long-press action: toggles expressive audio-reactive motor
+// movement only -- never touches the LED audio overlay (audioOverlayEnabled/
+// selectedOverlayMode are untouched by this function). Uses only
+// ExpressiveMotion's public API (never MotorDriver/GPIO directly), so
+// emergency stop, diagnostic mutual exclusion, MotorPowerGuard, and the
+// max-energized safeguard are all already enforced by the same code path
+// every other caller of setExpressiveMotionMode() goes through.
+static void handleButton4LongPress(unsigned long now) {
+  if (getExpressiveMotionMode() == ExpressiveMotionMode::AUDIO_REACTIVE) {
+    // Turning off is always safe to allow -- matches emergency-stop's own
+    // "always permitted to stop" philosophy. setExpressiveMotionMode(OFF)
+    // stops any in-flight pulse immediately (motorStop() +
+    // releaseMotorPowerImmediately()) and restores MotorLedPowerMode to
+    // FULL_MUTE -- see ExpressiveMotion.cpp's forceReleaseOrdinaryMovement().
+    setExpressiveMotionMode(ExpressiveMotionMode::OFF);
+    startVisualCue(VisualCueType::MOTOR_AUDIO_REACTIVE_OFF, now);
+    Serial.println(F("[BUTTON 4] Audio-reactive motor movement OFF"));
+    return;
+  }
+
+  // Turning on is refused while a motor/LED diagnostic (2/3/5/6) is
+  // active -- stricter than the 'motion audio' serial command (which
+  // accepts the mode change and simply defers actual movement until the
+  // diagnostic ends, via main.cpp's pauseExpressiveMotion()). No purple
+  // cue and no mode change here: "do not make purple flash unless
+  // AUDIO_REACTIVE was actually enabled successfully."
+  if (isAnyMotorDiagnosticActive()) {
+    Serial.println(F("[BUTTON 4] Audio-reactive motor movement refused -- a motor diagnostic is active"));
+    return;
+  }
+
+  // Covers both OFF->AUDIO_REACTIVE and IDLE_ALIVE->AUDIO_REACTIVE in one
+  // path: setExpressiveMotionMode() already switches directly between the
+  // two non-OFF modes without passing through an uncontrolled state (the
+  // underlying pulse state machine is shared and safety-checked
+  // regardless of which mode requested it; only the *next* idle-timer
+  // decision changes behavior) and re-rolls fresh idle timing.
+  setExpressiveMotionMode(ExpressiveMotionMode::AUDIO_REACTIVE);
+  startVisualCue(VisualCueType::MOTOR_AUDIO_REACTIVE_ON, now);
+  Serial.println(F("[BUTTON 4] Audio-reactive motor movement ON"));
+}
+
+// Button4 is dual-purpose (see the state variables' comment above): a
+// short press toggles the audio-reactive LED overlay (fires on RELEASE,
+// only if no long press occurred this hold); a press held past
+// BUTTON4_LONG_PRESS_MS instead toggles expressive audio-reactive motor
+// movement (fires once, on threshold crossing).
 static void handleButton4(unsigned long now) {
   // Read raw GPIO.
   int reading = digitalRead(button4.pin);
@@ -272,8 +322,9 @@ static void handleButton4(unsigned long now) {
     button4.lastDebounceTime = now;
   }
 
-  // Update debounce state; capture the press edge.
+  // Update debounce state; capture the press/release edges.
   bool pressedEdge = false;
+  bool releasedEdge = false;
   if ((now - button4.lastDebounceTime) > BUTTON4_DEBOUNCE_MS) {
     if (reading != button4.stableState) {
       button4.stableState = reading;
@@ -281,6 +332,7 @@ static void handleButton4(unsigned long now) {
         pressedEdge = true;
         if (button4DebugEnabled) Serial.println(F("[BUTTON4 DEBOUNCED] PRESSED"));
       } else {
+        releasedEdge = true;
         if (button4DebugEnabled) Serial.println(F("[BUTTON4 DEBOUNCED] RELEASED"));
       }
     }
@@ -305,10 +357,30 @@ static void handleButton4(unsigned long now) {
     return;
   }
 
-  if (!pressedEdge) return;
+  if (pressedEdge) {
+    button4PressStartMs = now;
+    button4LongPressFired = false;
+  }
 
-  Serial.println(F("[BUTTON4] Audio overlay toggle"));
-  toggleOverlayOffOn();
+  // Long-press: fires exactly once, the instant the held duration crosses
+  // the threshold -- not on release, so a longer hold never fires it
+  // again (button4LongPressFired latches until the next press edge), and
+  // switch bounce can't create duplicate events since this only evaluates
+  // against the already-debounced stableState==LOW, not raw readings.
+  if (button4.stableState == LOW && !button4LongPressFired && (now - button4PressStartMs) >= BUTTON4_LONG_PRESS_MS) {
+    button4LongPressFired = true;
+    handleButton4LongPress(now);
+  }
+
+  if (releasedEdge) {
+    if (button4LongPressFired) {
+      // Long press already handled its own action above -- release after
+      // a long press must not also fire the short-press overlay toggle.
+      return;
+    }
+    Serial.println(F("[BUTTON4] Audio overlay toggle"));
+    toggleOverlayOffOn();
+  }
 }
 
 // ============================================================================
@@ -388,6 +460,7 @@ void printStatus() {
   Serial.printf("  Button 4 raw state: %s\n", levelName(digitalRead(BUTTON4_PIN)));
   Serial.printf("  Button 4 debounced state: %s\n", button4.stableState == LOW ? "PRESSED" : "RELEASED");
   Serial.printf("  Button 4 debounce interval: %ums\n", (unsigned)BUTTON4_DEBOUNCE_MS);
+  Serial.printf("  Button 4 long-press threshold: %ums\n", (unsigned)BUTTON4_LONG_PRESS_MS);
 }
 
 // "motion" word command -- see include/ExpressiveMotion.h. `args` is
@@ -511,7 +584,7 @@ void initControls() {
   Serial.println(F("[BUTTON] GPIO10 using INPUT_PULLUP (Mode: press=next LED mode + next overlay mode, double-press=previous LED mode)"));
   Serial.println(F("[BUTTON] GPIO11 using INPUT_PULLUP (Mute: toggles LED output off/on)"));
   Serial.println(F("[BUTTON] GPIO17 using INPUT_PULLUP (Brightness: press=next level)"));
-  Serial.println(F("[BUTTON] GPIO5 using INPUT_PULLUP (Button4: press=toggle audio overlay ON/OFF)"));
+  Serial.println(F("[BUTTON] GPIO5 using INPUT_PULLUP (Button4: short press=toggle LED audio overlay ON/OFF, long press=toggle expressive audio-reactive motor movement)"));
 
   setBaseEffect(currentBaseEffect);
   resetAudioOverlayState(selectedOverlayMode, millis());

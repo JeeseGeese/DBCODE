@@ -66,12 +66,18 @@ static_assert(PHYSICAL_LED_COUNT <= NUM_LEDS,
 // other three buttons still use). Raised from 40ms after physical testing
 // suggested Button4 needed more settling margin; scoped to this one
 // button so Mode/Mute/Brightness timing is untouched.
-//
-// Button4 is now a plain immediate toggle (audio overlay ON/OFF) on the
-// debounced press edge -- no click-count/hold timing constant needed here
-// anymore; the single/double-click window this used to gate has been
-// removed along with that architecture.
 constexpr uint32_t BUTTON4_DEBOUNCE_MS = 75;
+
+// Button4 dual-purpose threshold (see Controls.cpp's handleButton4()):
+// short press (release before this elapses) toggles the audio-reactive
+// LED overlay, unchanged from the original single-purpose design; a
+// press held at least this long instead toggles expressive audio-reactive
+// motor movement (see include/ExpressiveMotion.h) once, on threshold
+// crossing -- not on release, so holding longer never fires it twice.
+// No previous hold/long-press constant existed for Button4 to preserve;
+// 900ms was chosen as a comfortably-distinguishable middle of the
+// requested 800-1200ms range.
+constexpr uint32_t BUTTON4_LONG_PRESS_MS = 900;
 
 // A press within this window of the previous press is treated as the second
 // half of a double-press instead of two independent single-presses. Larger

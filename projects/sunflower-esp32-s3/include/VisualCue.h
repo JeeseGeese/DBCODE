@@ -8,8 +8,10 @@
 // selected overlay are doing. Purely millis()-driven -- no delay().
 enum class VisualCueType {
   NONE,
-  OVERLAY_ENABLED,  // one soft green flash
-  OVERLAY_DISABLED, // two soft red flashes
+  OVERLAY_ENABLED,           // one soft green flash -- LED audio-reactive overlay ON
+  OVERLAY_DISABLED,          // two soft red flashes -- LED audio-reactive overlay OFF
+  MOTOR_AUDIO_REACTIVE_ON,   // one purple flash -- expressive AUDIO_REACTIVE motor mode ON
+  MOTOR_AUDIO_REACTIVE_OFF,  // one gold flash -- expressive AUDIO_REACTIVE motor mode OFF
 };
 
 // Arms a new cue starting now. Replaces any cue already in progress.

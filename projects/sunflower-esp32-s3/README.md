@@ -4,6 +4,22 @@ ESP32-S3 firmware project driving a 58-pixel WS2812B-compatible addressable
 LED strip, controlled by four physical pushbuttons, with an INMP441 I2S
 microphone driving optional audio-reactive overlays.
 
+## v1.0.0 milestone
+
+Tag `v1.0.0` marks the first physically-validated baseline: four-button
+control, WS2812 LED effects, INMP441 audio input and audio-reactive
+overlay, bidirectional DRV8833 motor control, the mechanical belt fix
+(see below), motor+LED coexistence, the centralized serial dispatcher,
+reliable emergency stop, the audio logging toggle, and the LED index
+mapping diagnostic — all verified working together with no resets,
+brownouts, watchdog failures, panics, or stuck motor states observed.
+
+Active development beyond this point happens on
+`feature/expressive-motion-v1` (branched from `v1.0.0`) — see
+[`docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`](../../docs/EXPRESSIVE_MOTION_DEVELOPMENT.md)
+for the expressive-motion architecture built on top of this baseline, and
+the "Expressive motion" section below for a summary.
+
 ## Hardware
 
 - **MCU:** ESP32-S3-WROOM module, N16R8 variant (16 MB flash, 8 MB octal PSRAM)
@@ -456,6 +472,55 @@ draw during motor engagement but does not increase available current or
 address the underlying shared-supply contention. See
 `docs/DRV8833_MOTOR_BRINGUP.md` section 14 for the physical validation
 that identified this contention.
+
+## Expressive motion (development branch)
+
+**Development-branch feature** (`feature/expressive-motion-v1`, branched
+from `v1.0.0`) — coordinates gentle motor movement with the existing LED
+effects and audio-reactive overlay. Disabled by default; does not alter
+any `v1.0.0` behavior when off. Full architecture, timing, and physical
+validation checklist: `docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`.
+
+```cpp
+enum class ExpressiveMotionMode { OFF, IDLE_ALIVE, AUDIO_REACTIVE };
+```
+
+- **IDLE_ALIVE:** gentle randomized idle movement — rest 900–3000ms
+  (occasionally 4000–7000ms), one short 100–220ms pulse, full stop,
+  repeat; never more than 2 consecutive same-direction pulses; an
+  occasional "curious" double movement (two pulses with a full stop
+  between).
+- **AUDIO_REACTIVE:** the same idle behavior while quiet; occasional
+  short movements timed to audio peaks (rate-limited, hysteresis-gated
+  bands) while active; a sustained loud sound produces intermittent
+  movement, never continuous motor power.
+- Both modes reuse `MotorPowerGuard`'s existing `DIM_DURING_MOTION` mode
+  (same one the `5` diagnostic uses) for LED coexistence — the current
+  base effect keeps animating at the selected motion brightness (`4`),
+  never frozen or replaced.
+
+**Commands** (word command, Enter-terminated — see Serial controls below):
+
+| Command | Effect |
+|---|---|
+| `motion` / `motion next` | cycle OFF → IDLE_ALIVE → AUDIO_REACTIVE → OFF |
+| `motion off` / `motion idle` / `motion audio` | select a mode directly |
+| `motion status` | print current expressive-motion state (also included in `?`) |
+| `motion demo` | one-shot demonstration: gentle forward → stop → gentle reverse → stop → curious movement → restore |
+
+Mutually exclusive with diagnostics `2`/`3`/`5`/`6` in both directions;
+`k` cancels expressive motion and `motion demo` immediately and forces
+the mode back to `OFF` (must be explicitly re-enabled afterward — unlike
+the diagnostics, this is a continuous autonomous behavior, so simply
+stopping the current pulse isn't enough).
+
+**Initial physical test procedure:** run `motion demo` first and observe
+before enabling continuous movement. See
+`docs/EXPRESSIVE_MOTION_DEVELOPMENT.md` section 11 for the full checklist
+(idle timing "aliveness", audio-band responsiveness, LED restoration,
+`k` reliability, audible motor strain). **Physical validation has not yet
+been performed** — do not leave `motion idle`/`motion audio` running
+unattended before reviewing that checklist.
 
 ## Architecture: base effects vs. audio overlays
 
@@ -983,3 +1048,7 @@ All constants below are in `include/Config.h`.
   with LEDs muted, inconsistent/weak while LEDs are active). The
   `MotorPowerGuard` LED-muting workaround reduces this contention for
   bench development; it is not a power fix.
+- **Expressive motion** (development branch, see above) has been
+  software-validated only. Run `motion demo` and review
+  `docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`'s physical validation checklist
+  before leaving `motion idle`/`motion audio` running unattended.

@@ -392,3 +392,61 @@ constexpr uint32_t MOTION_DEMO_INTER_PATTERN_PAUSE_MAX_MS = 600;
 // DIM_DURING_MOTION test-level selection (see MotorPowerGuard.h) rather
 // than a separate constant -- "begin conservatively at the already
 // validated selected motion brightness" per the development plan.
+
+// ============================================================================
+// Behavior Engine (see include/BehaviorEngine.h and
+// docs/BEHAVIOR_ENGINE_DEVELOPMENT.md) -- development-branch feature,
+// disabled by default (BehaviorState::MANUAL at boot). Drives movement
+// exclusively through ExpressiveMotion's requestExpressivePattern() on its
+// own schedule (see that function's comment) -- these intervals are
+// independent of, and not shared with, the MOTION_* idle-timer constants
+// above. All timings below are STARTING VALUES for physical/personality
+// tuning, not immutable requirements.
+// ============================================================================
+
+// CURIOUS: fairly frequent small investigative movements with occasional
+// longer observation pauses.
+constexpr uint32_t BEHAVIOR_CURIOUS_ACTION_MIN_MS = 1500;
+constexpr uint32_t BEHAVIOR_CURIOUS_ACTION_MAX_MS = 4000;
+
+// LISTENING: begins with one immediate gentle lean/nod (see
+// BehaviorEngine.cpp's setBehaviorState()), then a long, conservative
+// interval between occasional small nods -- "mostly still".
+constexpr uint32_t BEHAVIOR_LISTENING_NOD_MIN_MS = 4000;
+constexpr uint32_t BEHAVIOR_LISTENING_NOD_MAX_MS = 9000;
+// A recent AudioFeatures.clap during LISTENING pulls the next nod's
+// deadline in to no more than this many ms away (never fires instantly) --
+// simple, bounded "activity awareness" without a second mic reader/pipeline.
+constexpr uint32_t BEHAVIOR_LISTENING_CLAP_NUDGE_MS = 500;
+
+// THINKING: slow, sparse, gentle movement; long pauses.
+constexpr uint32_t BEHAVIOR_THINKING_ACTION_MIN_MS = 3000;
+constexpr uint32_t BEHAVIOR_THINKING_ACTION_MAX_MS = 7000;
+
+// EXCITED: a finite, energetic episode -- frequent lively movement for a
+// bounded duration, then automatic return to IDLE. The action interval is
+// deliberately several times longer than any single pattern's own duration
+// (all well under MOTION_MAX_ENERGIZED_MS), so a genuine rest/"recovery" gap
+// always separates one excited movement from the next.
+constexpr uint32_t BEHAVIOR_EXCITED_ACTION_MIN_MS = 900;
+constexpr uint32_t BEHAVIOR_EXCITED_ACTION_MAX_MS = 2200;
+constexpr uint32_t BEHAVIOR_EXCITED_EPISODE_MIN_MS = 6000;
+constexpr uint32_t BEHAVIOR_EXCITED_EPISODE_MAX_MS = 12000;
+
+// If requestExpressivePattern() is refused (ExpressiveMotion busy finishing
+// a previous pattern, or a diagnostic started concurrently), retry this
+// much sooner than a full action interval rather than waiting out the whole
+// randomized gap again.
+constexpr uint32_t BEHAVIOR_MOVEMENT_RETRY_MS = 300;
+
+// --- 'behavior demo': fixed dwell time in each state, in sequence
+// (IDLE -> CURIOUS -> LISTENING -> THINKING -> EXCITED -> SLEEPING), before
+// returning to MANUAL. Chosen so the total (35s) sits comfortably inside
+// the requested 25-45s range while still letting each state's movement
+// character read clearly. Cancelable at any point via 'k'.
+constexpr uint32_t BEHAVIOR_DEMO_IDLE_MS = 5000;
+constexpr uint32_t BEHAVIOR_DEMO_CURIOUS_MS = 6000;
+constexpr uint32_t BEHAVIOR_DEMO_LISTENING_MS = 6000;
+constexpr uint32_t BEHAVIOR_DEMO_THINKING_MS = 6000;
+constexpr uint32_t BEHAVIOR_DEMO_EXCITED_MS = 8000;
+constexpr uint32_t BEHAVIOR_DEMO_SLEEPING_MS = 4000;

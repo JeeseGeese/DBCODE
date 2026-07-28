@@ -122,5 +122,22 @@ void cancelExpressiveMotion();
 void startMotionDemo();
 bool isMotionDemoActive();
 
+// Requests a specific pattern to run immediately -- for use by a
+// higher-level coordinator (see include/BehaviorEngine.h) that wants to
+// choose WHICH pattern plays rather than letting IDLE_ALIVE/AUDIO_REACTIVE's
+// own internal selection choose. Runs through the exact same safety-checked
+// step engine as any other pattern (MotorPowerGuard coordination, the
+// MOTION_MAX_ENERGIZED_MS backstop, mandatory stops between direction
+// changes) -- BehaviorEngine never touches the motor or MotorPowerGuard
+// directly. Works independently of the currently selected
+// ExpressiveMotionMode -- in particular, it works while mode==OFF -- so a
+// caller driving its own movement schedule never has to fight mode's own
+// automatic idle-timer/audio-trigger selection for the same pattern engine.
+// Returns false (refused outright, never queued) if a pattern is already
+// running, 'motion demo' is active, a motor diagnostic ('2'/'3'/'5'/'6') is
+// active, or IDLE_SWAY is currently selected -- callers should retry later
+// rather than assume the request queues.
+bool requestExpressivePattern(ExpressivePattern pattern);
+
 // For the '?' status command.
 void printExpressiveMotionDebugState();

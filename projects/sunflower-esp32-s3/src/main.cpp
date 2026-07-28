@@ -9,6 +9,7 @@
 #include "Controls.h"
 #include "LedEffects.h"
 #include "VisualCue.h"
+#include "BehaviorEngine.h"
 #include "ExpressiveMotion.h"
 #include "MotorBehavior.h"
 #include "MotorDriver.h"
@@ -105,6 +106,7 @@ void setup() {
   initMotorBehavior();
   initMotorPriorityMode();
   initExpressiveMotion();  // resets to ExpressiveMotionMode::OFF -- user must explicitly enable
+  initBehaviorEngine();    // resets to BehaviorState::MANUAL -- user must explicitly select a state
 #if ENABLE_MOTOR_BEHAVIOR_TEST
   Serial.println(F("[MOTOR BEHAVIOR] Serial commands: '0' = OFF, '1' = IDLE_SWAY, 'k' = emergency stop, '?' = state"));
   Serial.println(F("[MOTOR PRIORITY TEST] Serial command: '2' = boot-equivalent runtime motor priority test"));
@@ -114,6 +116,8 @@ void setup() {
   Serial.println(F("[LED MAP] Serial command: '6' = LED index mapping tool (color test + interactive index walk)"));
   Serial.println(F("[AUDIO LOG] Serial command: '7' = toggle continuous audio serial output (default OFF)"));
   Serial.println(F("[MOTION] Word commands: 'motion' = cycle mode, 'motion off/idle/audio/status/demo' -- see README"));
+  Serial.println(F("[BEHAVIOR] Word commands: 'behavior' = status+help, 'behavior "
+                    "manual/idle/curious/listening/pondering/excited/sleeping/next/status/demo' -- see README"));
 #endif
 
   lastFrameTime = millis();
@@ -898,6 +902,7 @@ void serviceEmergencyStop() {
   cancelMotorLedTest();
   cancelLedMap();
   cancelExpressiveMotion();  // also forces expressive motion to DISABLED -- see its own comment
+  stopBehaviorEngine();      // forces BehaviorState to MANUAL -- does not itself touch the motor (see its own comment)
   stopMotorBehavior();
   motorStop();  // explicit backstop even though every path above already stops the motor via its own cancel
   clearPendingSerialLine();  // discard any word-command line interrupted mid-type by this 'k'
@@ -1053,6 +1058,7 @@ static void pollSerialDispatcher() {
                     isMicReady() ? 1 : 0, isAudioProcessingSuspended() ? 1 : 0, isAudioOverlayEnabled() ? 1 : 0,
                     isAudioLogEnabled() ? 1 : 0);
       printExpressiveMotionDebugState();
+      printBehaviorStatus();
       // Lightweight, permanent diagnostics (see the dispatcher's own
       // comment above) -- cheap counters/max-trackers, not per-frame
       // prints, so they don't perturb the timing they observe.
@@ -1088,6 +1094,12 @@ void loop() {
   } else {
     updateExpressiveMotion(now);  // non-blocking; no-op while ExpressiveMotionMode::OFF
   }
+  // Always runs, even during a diagnostic: it only ever calls
+  // ExpressiveMotion's own requestExpressivePattern(), which self-refuses
+  // while any diagnostic is active (the Behavior Engine's scheduler simply
+  // retries a little later -- see BEHAVIOR_MOVEMENT_RETRY_MS) -- no
+  // separate pause/skip gate is needed here.
+  updateBehaviorEngine(now, getAudioFeatures());  // non-blocking; no-op while BehaviorState::MANUAL
   updateMotorBehavior();  // non-blocking; no-op when OFF
   updateControls(now);   // buttons -- non-blocking, always runs, even during MotorPriorityMode, so
                           // buttons/emergency-stop stay live (Task 3 requirement); serial is handled

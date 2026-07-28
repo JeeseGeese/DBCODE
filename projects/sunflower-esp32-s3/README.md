@@ -538,6 +538,55 @@ responsiveness, LED restoration, `k` reliability, audible motor strain).
 **Physical validation has not yet been performed** — do not leave `motion
 idle`/`motion audio` running unattended before reviewing that checklist.
 
+## Behavior Engine (development branch)
+
+**Development-branch feature** (`feature/expressive-motion-v1`) — a
+high-level personality-state coordinator layered above expressive motion
+above. Disabled by default (`MANUAL`); does not alter any existing
+behavior until a `behavior` command selects a state. Coordinates
+exclusively through expressive motion's public API (never touches
+MotorDriver/GPIO/LED pixels/the microphone/serial/buttons directly). Full
+architecture and design rationale: `docs/BEHAVIOR_ENGINE_DEVELOPMENT.md`.
+
+```cpp
+enum class BehaviorState { MANUAL, IDLE, CURIOUS, LISTENING, THINKING, EXCITED, SLEEPING };
+```
+
+- **MANUAL:** inert — the user's own `motion` commands / Button4 long-press
+  have direct control, exactly as if this feature didn't exist.
+- **IDLE:** delegates to expressive motion's own `IDLE_ALIVE` engine.
+- **CURIOUS / LISTENING / THINKING / EXCITED:** each requests a small,
+  hand-picked set of named patterns on its own randomized interval —
+  investigative and frequent for CURIOUS, one gentle nod then mostly still
+  for LISTENING, slow and sparse for THINKING, a finite ~6–12s energetic
+  episode (auto-returns to IDLE) for EXCITED. See the doc above for the
+  exact pattern lists and intervals.
+- **SLEEPING:** movement fully at rest; no owned motor activity.
+
+LED presentation (base effect, overlay, brightness, mute) is left
+completely untouched by every Behavior Engine state — deliberately deferred
+rather than adding a second rendering layer; see the doc above, section 6.
+
+**Commands** (word command, Enter-terminated — see Serial controls below):
+
+| Command | Effect |
+|---|---|
+| `behavior` / `beh` | help + current status (no-arg) |
+| `behavior next` | cycle MANUAL → IDLE → CURIOUS → LISTENING → THINKING → EXCITED → SLEEPING → MANUAL |
+| `behavior manual/idle/curious/listening/pondering/excited/sleeping` | select a state directly (`pondering` selects `BehaviorState::THINKING` — see `docs/BEHAVIOR_ENGINE_DEVELOPMENT.md` on why "thinking" can't be typed as a serial token) |
+| `behavior status` | print current Behavior Engine state (also included in `?`) |
+| `behavior demo` | walks all six non-MANUAL states in order with a fixed dwell each, ~35s total |
+
+Mutually exclusive with diagnostics `2`/`3`/`5`/`6`: entering a
+movement-producing state (CURIOUS/LISTENING/THINKING/EXCITED) is refused
+while one is active. `k` forces `MANUAL` immediately and cancels any
+in-flight movement, from any state. Issuing a `motion` command (other than
+`motion status`) or a Button4 long-press action hands movement ownership
+back to `MANUAL` first.
+
+**Physical validation has not yet been performed** — see
+`docs/BEHAVIOR_ENGINE_DEVELOPMENT.md` section 15 for the tuning checklist.
+
 ## Architecture: base effects vs. audio overlays
 
 The firmware composes each frame in four stages:
@@ -1068,3 +1117,7 @@ All constants below are in `include/Config.h`.
   software-validated only. Run `motion demo` and review
   `docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`'s physical validation checklist
   before leaving `motion idle`/`motion audio` running unattended.
+- **Behavior Engine** (development branch, see above) has been
+  software-validated only. Run `behavior demo` and review
+  `docs/BEHAVIOR_ENGINE_DEVELOPMENT.md`'s physical tuning checklist before
+  leaving CURIOUS/LISTENING/THINKING/EXCITED running unattended.

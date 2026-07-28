@@ -362,6 +362,19 @@ void enterOrdinaryPatternStep(unsigned long now) {
   uint8_t count;
   const PatternStep *steps = stepsFor(currentPattern, count);
   if (!steps || patternStepIndex >= count) {
+    // Most patterns' final step is a MOVE, not a STOP (see the pattern
+    // tables above) -- stopMotor() must be called explicitly here so
+    // energizedSinceMs is cleared even when the pattern didn't end on its
+    // own STOP step (releaseMotorPower() stops MotorPowerGuard/the motor
+    // too, but has no visibility into this file's own energizedSinceMs
+    // bookkeeping). Mirrors enterDemoStep()'s equivalent completion
+    // branch, which already does this. Without it, a stale non-zero
+    // energizedSinceMs survives into the next idle rest and can trip the
+    // MOTION_MAX_ENERGIZED_MS backstop on a rest period alone, then never
+    // self-clear (the backstop's own recovery path only calls stopMotor()
+    // when phase != IDLE, which is already false by then) -- found via
+    // sustained Behavior Engine validation testing.
+    stopMotor();
     releaseMotorPower();
     phase = ExpressiveMotionPhase::RELEASING;
     phaseStartMs = now;
@@ -397,6 +410,13 @@ void forceReleaseOrdinaryMovement() {
   }
   setMotorLedPowerMode(MotorLedPowerMode::FULL_MUTE);
   idleDeadlineSet = false;
+  // Defense in depth: unconditionally clear energizedSinceMs even when
+  // phase was already IDLE, so a stale non-zero value from any future/
+  // unforeseen code path can never survive a call to this function -- see
+  // enterOrdinaryPatternStep()'s comment on the specific bug this guards
+  // against (a stuck timestamp that reflooded the MOTION_MAX_ENERGIZED_MS
+  // backstop every loop and could never self-clear).
+  energizedSinceMs = 0;
 }
 
 void forceReleaseDemo() {
@@ -529,7 +549,13 @@ void updateExpressiveMotion(unsigned long now) {
   updateMotionDemo(now);
   if (demoPhase != MotionDemoPhase::IDLE) return;
 
-  if (mode == ExpressiveMotionMode::OFF) return;
+  // NOTE: mode==OFF no longer short-circuits the whole function here -- it
+  // only guards the IDLE case's own "start a new pattern automatically"
+  // decision below. An already-in-flight pattern (however it was started:
+  // mode's own idle timer, an audio trigger, or an external
+  // requestExpressivePattern() call from BehaviorEngine) always advances
+  // through PREPARING/MOVING/STOPPING/RELEASING regardless of mode, so it
+  // can never get stuck mid-pulse if mode changes out from under it.
 
   bool audioTriggerClap = false;
   bool audioTriggerStrong = false;
@@ -574,6 +600,14 @@ void updateExpressiveMotion(unsigned long now) {
 
   switch (phase) {
     case ExpressiveMotionPhase::IDLE: {
+      // Starting a NEW pattern automatically (idle timer or audio trigger)
+      // requires mode != OFF. This does not block requestExpressivePattern()
+      // (see the public section below), which calls beginPattern() directly
+      // and bypasses this check entirely -- BehaviorEngine drives movement
+      // that way while mode stays OFF, so it never competes with mode's own
+      // automatic selection here.
+      if (mode == ExpressiveMotionMode::OFF) return;
+
       if (!idleDeadlineSet) armIdleDeadline(now);
 
       bool timerElapsed = (long)(now - idleDeadlineMs) >= 0;
@@ -705,6 +739,14 @@ void startMotionDemo() {
 }
 
 bool isMotionDemoActive() { return demoPhase != MotionDemoPhase::IDLE; }
+
+bool requestExpressivePattern(ExpressivePattern pattern) {
+  if (phase != ExpressiveMotionPhase::IDLE) return false;
+  if (isMotionDemoActive()) return false;
+  if (isAnyMotorDiagnosticActive() || getMotorBehavior() != MotorBehaviorMode::OFF) return false;
+  beginPattern(pattern, millis());
+  return true;
+}
 
 void printExpressiveMotionDebugState() {
   unsigned long now = millis();

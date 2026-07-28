@@ -2,6 +2,7 @@
 #include "AudioAnalyzer.h"
 #include "AudioVisualState.h"
 #include "AutoShowcase.h"
+#include "BehaviorEngine.h"
 #include "ExpressiveMotion.h"
 #include "VisualCue.h"
 #include <ctype.h>
@@ -215,6 +216,16 @@ static void toggleOverlayOffOn() {
   }
 }
 
+// Any command that gives the user direct control of expressive movement
+// (motion off/idle/audio/next/demo, Button4 long-press) must first hand
+// movement ownership back from the Behavior Engine, if it currently has
+// it -- see BehaviorEngine.h's setBehaviorState() doc comment. Guarded so
+// the common case (Behavior Engine was never touched, already MANUAL)
+// doesn't print a redundant "(unchanged)" line on every motion command.
+static void takeManualMotionControl() {
+  if (getBehaviorState() != BehaviorState::MANUAL) setBehaviorState(BehaviorState::MANUAL);
+}
+
 static void toggleMute() {
   muted = !muted;
   Serial.println(muted ? F("[MUTE] ON") : F("[MUTE] OFF"));
@@ -279,6 +290,7 @@ static void handleButton4LongPress(unsigned long now) {
     // stops any in-flight pulse immediately (motorStop() +
     // releaseMotorPowerImmediately()) and restores MotorLedPowerMode to
     // FULL_MUTE -- see ExpressiveMotion.cpp's forceReleaseOrdinaryMovement().
+    takeManualMotionControl();
     setExpressiveMotionMode(ExpressiveMotionMode::OFF);
     startVisualCue(VisualCueType::MOTOR_AUDIO_REACTIVE_OFF, now);
     Serial.println(F("[BUTTON 4] Audio-reactive motor movement OFF"));
@@ -302,6 +314,7 @@ static void handleButton4LongPress(unsigned long now) {
   // underlying pulse state machine is shared and safety-checked
   // regardless of which mode requested it; only the *next* idle-timer
   // decision changes behavior) and re-rolls fresh idle timing.
+  takeManualMotionControl();
   setExpressiveMotionMode(ExpressiveMotionMode::AUDIO_REACTIVE);
   startVisualCue(VisualCueType::MOTOR_AUDIO_REACTIVE_ON, now);
   Serial.println(F("[BUTTON 4] Audio-reactive motor movement ON"));
@@ -398,6 +411,8 @@ static void printHelp() {
   Serial.println(F("  overlays = list audio overlays"));
   Serial.println(F("  status   = full system status"));
   Serial.println(F("  motion [next|off|idle|audio|status|demo] = expressive motion (dev branch, see README)"));
+  Serial.println(F("  behavior/beh [next|manual|idle|curious|listening|pondering|excited|sleeping|status|demo]"));
+  Serial.println(F("           = personality-state coordinator (dev branch, see README)"));
   Serial.println(F("  g = [DIAGNOSTIC ONLY] force the enabled/green cue, no overlay state change"));
   Serial.println(F("  r = [DIAGNOSTIC ONLY] force the disabled/red cue, no overlay state change"));
   Serial.println(F("  b = [DIAGNOSTIC ONLY] toggle raw/debounced Button4 transition trace"));
@@ -471,20 +486,90 @@ void printStatus() {
 // dispatcher via feedSerialByte() -- no new Serial reader is introduced.
 static void dispatchMotionCommand(const char *args) {
   while (*args == ' ') args++;
-  if (*args == '\0' || strcasecmp(args, "next") == 0) {
+  // "status" is a read-only query -- it does not change movement ownership,
+  // so it deliberately does not call takeManualMotionControl() (see that
+  // function's comment). Every other recognized subcommand below takes
+  // direct manual control of expressive movement.
+  if (strcasecmp(args, "status") == 0) {
+    printExpressiveMotionDebugState();
+  } else if (*args == '\0' || strcasecmp(args, "next") == 0) {
+    takeManualMotionControl();
     cycleExpressiveMotionMode();
   } else if (strcasecmp(args, "off") == 0) {
+    takeManualMotionControl();
     setExpressiveMotionMode(ExpressiveMotionMode::OFF);
   } else if (strcasecmp(args, "idle") == 0) {
+    takeManualMotionControl();
     setExpressiveMotionMode(ExpressiveMotionMode::IDLE_ALIVE);
   } else if (strcasecmp(args, "audio") == 0) {
+    takeManualMotionControl();
     setExpressiveMotionMode(ExpressiveMotionMode::AUDIO_REACTIVE);
-  } else if (strcasecmp(args, "status") == 0) {
-    printExpressiveMotionDebugState();
   } else if (strcasecmp(args, "demo") == 0) {
+    takeManualMotionControl();
     startMotionDemo();
   } else {
     Serial.printf("[CMD] Unknown 'motion' subcommand '%s' -- try: motion [next|off|idle|audio|status|demo]\n", args);
+  }
+}
+
+// "behavior"/"beh" word command -- see include/BehaviorEngine.h. `args` is
+// whatever follows the matched prefix in the line (leading spaces stripped
+// below). No-arg "behavior" (or "beh") prints subcommand help + current
+// status, matching the spec's "no-arg = help+status" requirement.
+// "pondering", not "thinking": the central serial dispatcher
+// (main.cpp's pollSerialDispatcher()) intercepts 'k' unconditionally, even
+// mid-word (deliberately -- see its own comment, from the original
+// emergency-stop race investigation). "thinking" contains a 'k', so typing
+// it would always trigger an emergency stop partway through and corrupt
+// the rest of the line -- found via serial validation testing. The
+// BehaviorState::THINKING enum name itself is unaffected; only this
+// serial-facing token is renamed.
+static void printBehaviorHelp() {
+  Serial.println(F(
+      "[BEHAVIOR] Subcommands: next|manual|idle|curious|listening|pondering|excited|sleeping|status|demo"));
+}
+
+static BehaviorState nextBehaviorState(BehaviorState s) {
+  switch (s) {
+    case BehaviorState::MANUAL: return BehaviorState::IDLE;
+    case BehaviorState::IDLE: return BehaviorState::CURIOUS;
+    case BehaviorState::CURIOUS: return BehaviorState::LISTENING;
+    case BehaviorState::LISTENING: return BehaviorState::THINKING;
+    case BehaviorState::THINKING: return BehaviorState::EXCITED;
+    case BehaviorState::EXCITED: return BehaviorState::SLEEPING;
+    case BehaviorState::SLEEPING: return BehaviorState::MANUAL;
+  }
+  return BehaviorState::MANUAL;
+}
+
+static void dispatchBehaviorCommand(const char *args) {
+  while (*args == ' ') args++;
+  if (*args == '\0') {
+    printBehaviorHelp();
+    printBehaviorStatus();
+  } else if (strcasecmp(args, "next") == 0) {
+    setBehaviorState(nextBehaviorState(getBehaviorState()));
+  } else if (strcasecmp(args, "manual") == 0) {
+    setBehaviorState(BehaviorState::MANUAL);
+  } else if (strcasecmp(args, "idle") == 0) {
+    setBehaviorState(BehaviorState::IDLE);
+  } else if (strcasecmp(args, "curious") == 0) {
+    setBehaviorState(BehaviorState::CURIOUS);
+  } else if (strcasecmp(args, "listening") == 0) {
+    setBehaviorState(BehaviorState::LISTENING);
+  } else if (strcasecmp(args, "pondering") == 0) {
+    setBehaviorState(BehaviorState::THINKING);
+  } else if (strcasecmp(args, "excited") == 0) {
+    setBehaviorState(BehaviorState::EXCITED);
+  } else if (strcasecmp(args, "sleeping") == 0) {
+    setBehaviorState(BehaviorState::SLEEPING);
+  } else if (strcasecmp(args, "status") == 0) {
+    printBehaviorStatus();
+  } else if (strcasecmp(args, "demo") == 0) {
+    startBehaviorDemo();
+  } else {
+    printBehaviorHelp();
+    Serial.printf("[CMD] Unknown 'behavior' subcommand '%s'\n", args);
   }
 }
 
@@ -531,6 +616,8 @@ static void dispatchCommand(const char *cmd) {
   else if (strcasecmp(cmd, "overlays") == 0) printOverlaysList();
   else if (strcasecmp(cmd, "status") == 0) printStatus();
   else if (strncasecmp(cmd, "motion", 6) == 0 && (cmd[6] == '\0' || cmd[6] == ' ')) dispatchMotionCommand(cmd + 6);
+  else if (strncasecmp(cmd, "behavior", 8) == 0 && (cmd[8] == '\0' || cmd[8] == ' ')) dispatchBehaviorCommand(cmd + 8);
+  else if (strncasecmp(cmd, "beh", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) dispatchBehaviorCommand(cmd + 3);
   else Serial.printf("[CMD] Unknown command '%s' -- press 'h' for help\n", cmd);
 }
 

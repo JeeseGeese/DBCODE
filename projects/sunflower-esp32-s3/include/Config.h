@@ -290,22 +290,66 @@ constexpr uint32_t AUTO_SHOWCASE_TRANSITION_MS = 1500;       // crossfade durati
 // ============================================================================
 // Expressive motion (see include/ExpressiveMotion.h and
 // docs/EXPRESSIVE_MOTION_DEVELOPMENT.md) -- development-branch feature,
-// disabled by default (ExpressiveMotionMode::DISABLED at boot). All
-// timings deliberately conservative for initial physical validation; not
-// yet tuned against the actual mechanism/belt.
+// disabled by default (ExpressiveMotionMode::OFF at boot). All timings
+// below are STARTING VALUES for physical tuning against the actual
+// mechanism/belt, not immutable requirements -- expect to revisit every
+// range in this section after the physical validation checklist in
+// docs/EXPRESSIVE_MOTION_DEVELOPMENT.md.
 // ============================================================================
 
-// --- IDLE_ALIVE: gentle randomized idle behavior ---
-constexpr uint32_t MOTION_PULSE_MIN_MS = 100;         // one short movement, lower bound
-constexpr uint32_t MOTION_PULSE_MAX_MS = 220;         // one short movement, upper bound -- well under the 2000ms safeguard
-constexpr uint32_t MOTION_REST_MIN_MS = 900;          // minimum rest between movements
-constexpr uint32_t MOTION_REST_MAX_MS = 3000;         // typical maximum rest between movements
-constexpr uint32_t MOTION_LONG_REST_MIN_MS = 4000;    // occasional longer pause, lower bound
-constexpr uint32_t MOTION_LONG_REST_MAX_MS = 7000;    // occasional longer pause, upper bound
-constexpr float MOTION_LONG_REST_CHANCE = 0.15f;      // fraction of idle cycles that use the long-rest range instead
-constexpr float MOTION_CURIOUS_CHANCE = 0.20f;        // fraction of idle cycles that do a "curious" second pulse
-constexpr uint32_t MOTION_INTRA_PULSE_STOP_MS = 200;  // brief full stop between a curious double-movement's two pulses
+// --- Pulse duration tiers, shared by every movement pattern (see
+// ExpressiveMotion.cpp's pattern step tables) -- a pattern is built from
+// these tiers rather than each pattern hardcoding its own timing, so
+// tuning "how strong is a dramatic pulse" in one place retunes every
+// pattern that uses that tier. TUNE FIRST: these three ranges are the
+// single biggest lever on how dramatic movement feels overall.
+constexpr uint32_t MOTION_GENTLE_PULSE_MIN_MS = 120;
+constexpr uint32_t MOTION_GENTLE_PULSE_MAX_MS = 220;
+constexpr uint32_t MOTION_MEDIUM_PULSE_MIN_MS = 220;
+constexpr uint32_t MOTION_MEDIUM_PULSE_MAX_MS = 380;
+constexpr uint32_t MOTION_DRAMATIC_PULSE_MIN_MS = 380;
+constexpr uint32_t MOTION_DRAMATIC_PULSE_MAX_MS = 550;  // still well under the 2000ms max-energized safeguard
+// Pause between two grouped pulses within one pattern (e.g. the gap in a
+// double twitch) -- deliberately shorter than a full idle rest.
+constexpr uint32_t MOTION_MICRO_PAUSE_MIN_MS = 100;
+constexpr uint32_t MOTION_MICRO_PAUSE_MAX_MS = 220;
+// Longer settle pause used only by DRAMATIC_SWEEP's trailing "extended
+// rest" step, before it releases -- distinct from the micro-pause above.
+constexpr uint32_t MOTION_EXTENDED_PAUSE_MIN_MS = 400;
+constexpr uint32_t MOTION_EXTENDED_PAUSE_MAX_MS = 700;
+
+// Defensive backstop: no single continuous energized segment may exceed
+// this, regardless of what a pattern's rolled step duration works out to.
+// Mirrors the same 2000ms ceiling used elsewhere in this codebase (see
+// main.cpp's MOTOR BREAKAWAY TEST) -- should never actually trigger given
+// the tiers above, but guards against a future misconfiguration.
+constexpr uint32_t MOTION_MAX_ENERGIZED_MS = 2000;
+
 constexpr uint8_t MOTION_MAX_CONSECUTIVE_SAME_DIR = 2; // never more than this many same-direction pulses in a row
+
+// --- IDLE_ALIVE: weighted randomized idle pattern selection (see
+// ExpressiveMotion.cpp's pickWeightedIdlePattern()) -- must sum to 1.0.
+// TUNE: raise DRAMATIC_SWEEP/EXCITED_TRIPLE for a livelier flower, raise
+// GENTLE_SWAY for a calmer one.
+constexpr float MOTION_WEIGHT_GENTLE_SWAY = 0.25f;
+constexpr float MOTION_WEIGHT_MEDIUM_SWAY = 0.20f;
+constexpr float MOTION_WEIGHT_LONG_LEAN = 0.15f;
+constexpr float MOTION_WEIGHT_DOUBLE_TWITCH = 0.15f;
+constexpr float MOTION_WEIGHT_FORWARD_REVERSE_NOD = 0.10f;
+constexpr float MOTION_WEIGHT_EXCITED_TRIPLE = 0.08f;
+constexpr float MOTION_WEIGHT_DRAMATIC_SWEEP = 0.07f;
+
+constexpr uint32_t MOTION_REST_MIN_MS = 600;          // minimum rest between movements
+constexpr uint32_t MOTION_REST_MAX_MS = 2200;         // typical maximum rest between movements
+constexpr uint32_t MOTION_LONG_REST_MIN_MS = 2500;    // occasional longer pause, lower bound
+constexpr uint32_t MOTION_LONG_REST_MAX_MS = 5000;    // occasional longer pause, upper bound
+constexpr float MOTION_LONG_REST_CHANCE = 0.15f;      // fraction of idle cycles that use the long-rest range instead
+
+// A slow, minimal SETTLE movement instead of the normal weighted pick,
+// used only within MOTION_SETTLE_RECENT_ACTIVITY_MS of the last audio
+// trigger (QUIET after recent conversation/sound, not QUIET all along).
+constexpr float MOTION_SETTLE_CHANCE = 0.12f;
+constexpr uint32_t MOTION_SETTLE_RECENT_ACTIVITY_MS = 5000;
 
 // --- AUDIO_REACTIVE: activity bands (hysteresis) + cooldowns ---
 // Based on AudioFeatures.envelope (already attack/release-smoothed, 0..1)
@@ -315,8 +359,34 @@ constexpr float MOTION_AUDIO_ACTIVE_ENTER = 0.20f;
 constexpr float MOTION_AUDIO_ACTIVE_EXIT = 0.12f;
 constexpr float MOTION_AUDIO_STRONG_ENTER = 0.55f;
 constexpr float MOTION_AUDIO_STRONG_EXIT = 0.40f;
-constexpr uint32_t MOTION_AUDIO_ACTIVE_COOLDOWN_MS = 700;  // min gap between ordinary audio-triggered movements
-constexpr uint32_t MOTION_AUDIO_STRONG_COOLDOWN_MS = 1400; // min gap between STRONG (two-pulse) reactions
+constexpr uint32_t MOTION_AUDIO_ACTIVE_COOLDOWN_MS = 700;   // min gap between ordinary ACTIVE reactions
+constexpr uint32_t MOTION_AUDIO_STRONG_COOLDOWN_MS = 1400;  // min gap between STRONG reactions
+// AudioFeatures.clap is already edge-triggered and cooldown-gated inside
+// AudioAnalyzer.cpp (AUDIO_CLAP_COOLDOWN_MS=250ms there) -- this is a
+// SEPARATE, slightly longer cooldown scoped to how often a clap may
+// additionally trigger a *motor* reaction, independent of the STRONG band
+// cooldown above (a clap can fire its own recoil even if a STRONG
+// band-rising reaction just cooled down, and vice versa).
+constexpr uint32_t MOTION_AUDIO_CLAP_COOLDOWN_MS = 800;
+
+// Chance an ACTIVE reaction uses the two-pulse FORWARD_REVERSE_NOD
+// instead of a single AUDIO_ACTIVE_PULSE -- "one medium pulse or a
+// two-pulse conversational nod".
+constexpr float MOTION_ACTIVE_NOD_CHANCE = 0.4f;
+
+// --- Speech dynamics: occasional grouped movement during a burst of
+// ACTIVE events (e.g. sustained speech), instead of identical single
+// pulses every time. Fixed-size counter + timestamp only -- no queue, no
+// heap allocation, bounded by MOTION_SPEECH_WINDOW_MS resetting the count.
+constexpr uint32_t MOTION_SPEECH_WINDOW_MS = 4000;       // bounded window for counting recent ACTIVE events
+constexpr uint8_t MOTION_SPEECH_GROUP_THRESHOLD = 3;     // ACTIVE events within the window before grouping is eligible
+constexpr float MOTION_SPEECH_GROUP_CHANCE = 0.35f;      // chance of actually using a grouped pattern once eligible
+
+// --- motion demo: pause between each demonstrated pattern (distinct from
+// the intra-pattern micro-pause above) -- a clearly visible "safe stop
+// interval" so each pattern in the demo reads as a separate demonstration.
+constexpr uint32_t MOTION_DEMO_INTER_PATTERN_PAUSE_MIN_MS = 400;
+constexpr uint32_t MOTION_DEMO_INTER_PATTERN_PAUSE_MAX_MS = 600;
 
 // --- Motion-motion LED brightness: reuses MotorPowerGuard's existing
 // DIM_DURING_MOTION test-level selection (see MotorPowerGuard.h) rather

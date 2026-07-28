@@ -485,15 +485,28 @@ validation checklist: `docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`.
 enum class ExpressiveMotionMode { OFF, IDLE_ALIVE, AUDIO_REACTIVE };
 ```
 
-- **IDLE_ALIVE:** gentle randomized idle movement — rest 900–3000ms
-  (occasionally 4000–7000ms), one short 100–220ms pulse, full stop,
-  repeat; never more than 2 consecutive same-direction pulses; an
-  occasional "curious" double movement (two pulses with a full stop
-  between).
-- **AUDIO_REACTIVE:** the same idle behavior while quiet; occasional
-  short movements timed to audio peaks (rate-limited, hysteresis-gated
-  bands) while active; a sustained loud sound produces intermittent
-  movement, never continuous motor power.
+Movement is built from eleven named, non-blocking **patterns**
+(`GENTLE_SWAY`, `MEDIUM_SWAY`, `LONG_LEAN`, `DOUBLE_TWITCH`,
+`FORWARD_REVERSE_NOD`, `EXCITED_TRIPLE`, `DRAMATIC_SWEEP`, plus
+audio-specific `AUDIO_ACTIVE_PULSE`/`AUDIO_STRONG_BURST`/
+`AUDIO_CLAP_RECOIL`/`SETTLE`) rather than a single repeating pulse — see
+`docs/EXPRESSIVE_MOTION_DEVELOPMENT.md` section 4 for the full
+architecture and every pattern's exact step sequence.
+
+- **IDLE_ALIVE:** weighted-random selection among the seven idle patterns
+  (25% gentle sway down to 7% dramatic sweep — the full weighting table is
+  in the doc above), separated by a randomized rest (600–2200ms, or
+  occasionally 2500–5000ms); never more than 2 consecutive same-direction
+  pulses, enforced globally.
+- **AUDIO_REACTIVE:** the same idle-pattern behavior while quiet
+  (including an occasional slow `SETTLE` movement after recent activity);
+  a rising edge into the ACTIVE or STRONG band, or a clap, each
+  independently cooldown-gated, triggers a matching reaction (a single
+  pulse or two-pulse "nod" for ACTIVE, a two/three-pulse burst for STRONG,
+  a sharp pulse + recoil for a clap); several ACTIVE events in a bounded
+  window occasionally get a livelier grouped reaction instead of identical
+  single pulses. A sustained loud sound produces intermittent movement,
+  never continuous motor power.
 - Both modes reuse `MotorPowerGuard`'s existing `DIM_DURING_MOTION` mode
   (same one the `5` diagnostic uses) for LED coexistence — the current
   base effect keeps animating at the selected motion brightness (`4`),
@@ -505,22 +518,25 @@ enum class ExpressiveMotionMode { OFF, IDLE_ALIVE, AUDIO_REACTIVE };
 |---|---|
 | `motion` / `motion next` | cycle OFF → IDLE_ALIVE → AUDIO_REACTIVE → OFF |
 | `motion off` / `motion idle` / `motion audio` | select a mode directly |
-| `motion status` | print current expressive-motion state (also included in `?`) |
-| `motion demo` | one-shot demonstration: gentle forward → stop → gentle reverse → stop → curious movement → restore |
+| `motion status` | print current expressive-motion state (also included in `?` — mode, active pattern, step, direction, time remaining, all cooldowns) |
+| `motion demo` | demonstrates seven pattern families in order (gentle sway → medium sway → double twitch → forward/reverse nod → excited triple → dramatic sweep → clap-style recoil), ~10-11s total |
 
 Mutually exclusive with diagnostics `2`/`3`/`5`/`6` in both directions;
-`k` cancels expressive motion and `motion demo` immediately and forces
-the mode back to `OFF` (must be explicitly re-enabled afterward — unlike
-the diagnostics, this is a continuous autonomous behavior, so simply
-stopping the current pulse isn't enough).
+`k` cancels expressive motion and `motion demo` immediately (from any
+pattern or step) and forces the mode back to `OFF` (must be explicitly
+re-enabled afterward — unlike the diagnostics, this is a continuous
+autonomous behavior, so simply stopping the current pulse isn't enough).
+Switching directly between `IDLE_ALIVE` and `AUDIO_REACTIVE` also cancels
+any in-flight pattern safely rather than letting it finish under the old
+mode.
 
 **Initial physical test procedure:** run `motion demo` first and observe
 before enabling continuous movement. See
-`docs/EXPRESSIVE_MOTION_DEVELOPMENT.md` section 11 for the full checklist
-(idle timing "aliveness", audio-band responsiveness, LED restoration,
-`k` reliability, audible motor strain). **Physical validation has not yet
-been performed** — do not leave `motion idle`/`motion audio` running
-unattended before reviewing that checklist.
+`docs/EXPRESSIVE_MOTION_DEVELOPMENT.md` section 12 for the full checklist
+(per-pattern strength/timing, idle "aliveness", audio-band
+responsiveness, LED restoration, `k` reliability, audible motor strain).
+**Physical validation has not yet been performed** — do not leave `motion
+idle`/`motion audio` running unattended before reviewing that checklist.
 
 ## Architecture: base effects vs. audio overlays
 

@@ -23,25 +23,44 @@ enum class ExpressiveMotionMode {
 enum class ExpressiveMotionPhase {
   IDLE,       // resting; counting down to the next eligible movement
   PREPARING,  // MotorPowerGuard requested, waiting for READY
-  MOVING,     // motor energized in motionDirection
-  STOPPING,   // brief stop after a pulse (may lead into a second "curious" pulse)
+  MOVING,     // motor energized -- executing a MOVE step of the current pattern
+  STOPPING,   // motor stopped -- executing a STOP step of the current pattern
   RELEASING,  // motor stopped, MotorPowerGuard settle/restore in progress
 };
 
-// A separate, small state machine for 'motion demo' (see TASK 10 in
+// A named, non-blocking sequence of motor pulses/stops/direction changes
+// (see ExpressiveMotion.cpp's PatternStep tables) -- internal to this
+// module; nothing outside ExpressiveMotion.cpp branches on which pattern
+// is running, only on ExpressiveMotionPhase above. See
+// docs/EXPRESSIVE_MOTION_DEVELOPMENT.md for what each one does and why.
+enum class ExpressivePattern {
+  NONE,
+  GENTLE_SWAY,
+  MEDIUM_SWAY,
+  LONG_LEAN,
+  DOUBLE_TWITCH,
+  FORWARD_REVERSE_NOD,
+  EXCITED_TRIPLE,
+  DRAMATIC_SWEEP,
+  AUDIO_ACTIVE_PULSE,
+  AUDIO_STRONG_BURST,
+  AUDIO_CLAP_RECOIL,
+  SETTLE,
+};
+
+// A separate, small state machine for 'motion demo' (see
 // docs/EXPRESSIVE_MOTION_DEVELOPMENT.md) -- exposed for '?' and mutual
 // exclusion with the movement-pulse machine above (only one may run at a
 // time; the demo takes priority and pauses ordinary idle/audio movement
-// for its short duration).
+// for its duration). Walks a fixed sequence of ExpressivePatterns (see
+// ExpressiveMotion.cpp's DEMO_SEQUENCE), reusing the same per-step engine
+// ordinary movement uses, with a visible pause between each demonstrated
+// pattern.
 enum class MotionDemoPhase {
   IDLE,
   PREPARING,
-  FORWARD,
-  STOP1,
-  REVERSE,
-  STOP2,
-  CURIOUS_PULSE,
-  CURIOUS_STOP,
+  RUNNING_PATTERN,       // executing the current step of the current demo pattern
+  INTER_PATTERN_PAUSE,   // safe stop interval between demonstrated patterns
   RELEASING,
 };
 

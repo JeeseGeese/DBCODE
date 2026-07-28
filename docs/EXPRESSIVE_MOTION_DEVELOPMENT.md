@@ -88,48 +88,137 @@ codebase.)
 enum class ExpressiveMotionPhase { IDLE, PREPARING, MOVING, STOPPING, RELEASING };
 ```
 
-One pulse: `IDLE` (resting, counting down) → `PREPARING` (MotorPowerGuard
-requested, waiting for READY) → `MOVING` (energized) → `STOPPING` (brief
-full stop; may lead into a second "curious" pulse, back to `MOVING`) →
+One pattern: `IDLE` (resting, counting down) → `PREPARING` (MotorPowerGuard
+requested, waiting for READY) → alternating `MOVING`/`STOPPING` (one pass
+per step of the selected pattern's step table — see section 4) →
 `RELEASING` (MotorPowerGuard settle/restore, `MotorLedPowerMode` restored
-to `FULL_MUTE`) → back to `IDLE`.
+to `FULL_MUTE`) → back to `IDLE`. The same phase enum is reused regardless
+of *which* pattern is running or how many steps it has — `MOVING` means
+"the current step is a move", `STOPPING` means "the current step is a
+stop", nothing more specific than that.
 
 ```cpp
-enum class MotionDemoPhase { IDLE, PREPARING, FORWARD, STOP1, REVERSE, STOP2, CURIOUS_PULSE, CURIOUS_STOP, RELEASING };
+enum class MotionDemoPhase { IDLE, PREPARING, RUNNING_PATTERN, INTER_PATTERN_PAUSE, RELEASING };
 ```
 
-A separate, smaller one-shot state machine for `motion demo` (see section
-8) — takes exclusive priority over the ordinary pulse machine above for
-its brief duration.
+A separate, smaller state machine for `motion demo` (see section 9) —
+takes exclusive priority over the ordinary pattern machine above for its
+duration. Walks a fixed sequence of patterns (`RUNNING_PATTERN`), pausing
+visibly between each (`INTER_PATTERN_PAUSE`), reusing the exact same
+per-step engine ordinary movement uses.
 
-## 4. IDLE_ALIVE timing
+## 4. Pattern architecture
 
-All constants in `Config.h`'s "Expressive motion" section:
+Movement is no longer a single pulse (optionally followed by one "curious"
+second pulse) — it's a **named, data-driven sequence of steps**, and both
+ordinary movement and `motion demo` share one small step-execution engine
+rather than each hand-rolling their own state machine.
 
-| Constant | Value | Meaning |
+```cpp
+enum class ExpressivePattern {
+  NONE, GENTLE_SWAY, MEDIUM_SWAY, LONG_LEAN, DOUBLE_TWITCH,
+  FORWARD_REVERSE_NOD, EXCITED_TRIPLE, DRAMATIC_SWEEP,
+  AUDIO_ACTIVE_PULSE, AUDIO_STRONG_BURST, AUDIO_CLAP_RECOIL, SETTLE,
+};
+```
+
+Internally, each pattern is a small `constexpr` array of steps:
+
+```cpp
+enum class StepAction { MOVE_RANDOM, MOVE_OPPOSITE, STOP };
+struct PatternStep { StepAction action; uint32_t minMs; uint32_t maxMs; };
+```
+
+`MOVE_RANDOM` picks a fresh direction (respecting the consecutive-same-
+direction cap); `MOVE_OPPOSITE` always reverses relative to the last
+chosen direction (a deliberate, cap-respecting reversal that always resets
+the same-direction streak); `STOP` calls `motorStop()` and waits. Every
+step's duration is rolled once, from its `[minMs,maxMs)` **tier**, when
+the step begins — patterns reference shared tiers rather than hardcoding
+their own numbers, so retuning "how strong is a dramatic pulse" in
+`Config.h` retunes every pattern that uses that tier at once. A single
+generic runner (`enterOrdinaryPatternStep()` for ordinary movement,
+`enterDemoStep()` for the demo — nearly identical, kept separate only
+because they track different phase enums for mutual-exclusion purposes)
+advances through a pattern's steps and releases once they're exhausted.
+
+**Shared timing tiers** (`Config.h`, starting values for physical tuning):
+
+| Tier | Range | Used by |
 |---|---|---|
-| `MOTION_PULSE_MIN_MS` / `MOTION_PULSE_MAX_MS` | 100–220ms | one short movement |
-| `MOTION_REST_MIN_MS` / `MOTION_REST_MAX_MS` | 900–3000ms | typical rest between movements |
-| `MOTION_LONG_REST_MIN_MS` / `MOTION_LONG_REST_MAX_MS` | 4000–7000ms | occasional longer pause |
-| `MOTION_LONG_REST_CHANCE` | 15% | fraction of idle cycles using the long-rest range |
-| `MOTION_CURIOUS_CHANCE` | 20% | fraction of idle cycles that do a second "curious" pulse |
-| `MOTION_INTRA_PULSE_STOP_MS` | 200ms | full stop between a curious double-movement's two pulses |
-| `MOTION_MAX_CONSECUTIVE_SAME_DIR` | 2 | never more than this many same-direction pulses in a row |
+| `MOTION_GENTLE_PULSE_MIN/MAX_MS` | 120–220ms | gentle sway, twitch pulses, settle, clap recoil |
+| `MOTION_MEDIUM_PULSE_MIN/MAX_MS` | 220–380ms | medium sway, nod, triple's 3rd pulse, burst recoil |
+| `MOTION_DRAMATIC_PULSE_MIN/MAX_MS` | 380–550ms | long lean, sweep's lead pulse, strong burst, clap's sharp pulse |
+| `MOTION_MICRO_PAUSE_MIN/MAX_MS` | 100–220ms | the stop between two pulses within one pattern |
+| `MOTION_EXTENDED_PAUSE_MIN/MAX_MS` | 400–700ms | dramatic sweep's trailing settle pause only |
 
-Each idle cycle: roll a rest duration (occasionally the longer range),
-roll whether this cycle will be a "curious" double movement, then once the
-rest elapses, choose a direction (forced to switch if the consecutive-
-same-direction cap was hit, otherwise random) and pulse for a random
-100–220ms. If curious, stop for 200ms, choose again (cap still applies,
-so this is where "occasionally move in the opposite direction" mostly
-happens), pulse again, then release. `Config.h`'s constants are the single
-place to retune this without touching the implementation.
+All comfortably under the existing 2000ms max-energized safeguard, and
+additionally backstopped by a new `MOTION_MAX_ENERGIZED_MS` = 2000ms
+defensive ceiling (see section 10) that would force a stop if any single
+continuous segment somehow exceeded it — should never trigger given the
+tiers above, but guards against a future misconfiguration.
 
-## 5. AUDIO_REACTIVE bands, hysteresis, cooldowns
+**Pattern definitions** (`ExpressiveMotion.cpp`; ⏸ = `STOP` step):
+
+| Pattern | Steps | Feel |
+|---|---|---|
+| `GENTLE_SWAY` | move (gentle) | the old default single-pulse behavior |
+| `MEDIUM_SWAY` | move (medium) | a plainer, more noticeable single pulse |
+| `LONG_LEAN` | move (dramatic) | one longer pulse, no direction change |
+| `DOUBLE_TWITCH` | move(gentle) ⏸ move-opposite(gentle) | a quick back-and-forth |
+| `FORWARD_REVERSE_NOD` | move(medium) ⏸ move-opposite(medium) | a clearer "nod" |
+| `EXCITED_TRIPLE` | move(gentle) ⏸ move-opposite(gentle) ⏸ move-random(medium) | three quick pulses |
+| `DRAMATIC_SWEEP` | move(dramatic) ⏸ move-opposite(medium) ⏸(extended) | the strongest idle pattern |
+| `AUDIO_ACTIVE_PULSE` | move (medium) | ordinary ACTIVE reaction |
+| `AUDIO_STRONG_BURST` | move(dramatic) ⏸ move-opposite(medium) | STRONG reaction |
+| `AUDIO_CLAP_RECOIL` | move(dramatic) ⏸ move-opposite(gentle) | sharp pulse + shorter recoil |
+| `SETTLE` | move (gentle) | slow, minimal movement after recent activity |
+
+Every pattern's last step is followed by `RELEASING` — there is no pattern
+that ends energized. Every pair of consecutive move steps in every table
+has a `STOP` between them; there is no pattern capable of an instantaneous
+polarity reversal.
+
+## 5. IDLE_ALIVE: weighted pattern selection
+
+`Config.h`'s `MOTION_WEIGHT_*` constants (sum to 1.0), used by
+`pickWeightedIdlePattern()`:
+
+| Pattern | Weight |
+|---|---|
+| `GENTLE_SWAY` | 25% |
+| `MEDIUM_SWAY` | 20% |
+| `LONG_LEAN` | 15% |
+| `DOUBLE_TWITCH` | 15% |
+| `FORWARD_REVERSE_NOD` | 10% |
+| `EXCITED_TRIPLE` | 8% |
+| `DRAMATIC_SWEEP` | 7% |
+
+Each idle cycle: roll a rest duration (`MOTION_REST_MIN/MAX_MS` =
+600–2200ms, or occasionally `MOTION_LONG_REST_MIN/MAX_MS` = 2500–5000ms,
+`MOTION_LONG_REST_CHANCE` = 15% of cycles); once it elapses, weighted-pick
+one of the seven patterns above and run it. The
+`MOTION_MAX_CONSECUTIVE_SAME_DIR` = 2 cap (never more than 2 same-
+direction pulses in a row, enforced globally across pattern and mode
+boundaries, not reset per-pattern) still applies to every `MOVE_RANDOM`
+step regardless of which pattern picked it.
+
+**SETTLE:** the timestamp of the last audio trigger (ACTIVE, STRONG, or
+clap) is only ever set while in `AUDIO_REACTIVE` mode, since that's the
+only mode that evaluates audio triggers at all. Within
+`MOTION_SETTLE_RECENT_ACTIVITY_MS` = 5000ms of that timestamp, there's a
+`MOTION_SETTLE_CHANCE` = 12% chance of a slow `SETTLE` movement instead of
+the normal weighted pick — "after recent activity, occasionally perform a
+slow settle movement" rather than jumping straight back to energetic idle
+patterns.
+
+## 6. AUDIO_REACTIVE bands, hysteresis, cooldowns, and reactions
 
 Reuses `AudioAnalyzer.h`'s existing `AudioFeatures.envelope` (already
-attack/release-smoothed, 0..1) — no new microphone reader, no raw
-per-sample decisions.
+attack/release-smoothed, 0..1) and `AudioFeatures.clap` (already
+edge-triggered and cooldown-gated inside `AudioAnalyzer.cpp`) — no new
+microphone reader, no raw per-sample decisions, no second audio-analysis
+implementation.
 
 ```cpp
 enum class AudioActivityBand { QUIET, ACTIVE, STRONG };
@@ -143,22 +232,41 @@ boundary doesn't chatter):
 | ACTIVE | `MOTION_AUDIO_ACTIVE_ENTER` = 0.20 | `MOTION_AUDIO_ACTIVE_EXIT` = 0.12 |
 | STRONG | `MOTION_AUDIO_STRONG_ENTER` = 0.55 | `MOTION_AUDIO_STRONG_EXIT` = 0.40 |
 
-A movement only triggers on a **rising edge** into ACTIVE or STRONG (or on
-`AudioFeatures.clap`, treated as an immediate STRONG trigger) — never on a
-held level. This is why a sustained loud sound produces intermittent
-movement rather than holding the motor energized: the edge only fires
-once per crossing, each gated by its own cooldown:
+A reaction only triggers on a **rising edge** into ACTIVE or STRONG (or on
+the `clap` edge itself) — never on a held level. This is why a sustained
+loud sound produces intermittent movement rather than holding the motor
+energized. **Clap, STRONG, and ACTIVE are three independent triggers**,
+each with its own cooldown, checked in that priority order (a clap firing
+doesn't consume or reset the STRONG cooldown and vice versa):
 
-- `MOTION_AUDIO_ACTIVE_COOLDOWN_MS` = 700ms (ordinary reaction: one pulse)
-- `MOTION_AUDIO_STRONG_COOLDOWN_MS` = 1400ms (strong reaction: the same
-  "curious" two-pulse pattern IDLE_ALIVE uses)
+| Trigger | Cooldown | Reaction |
+|---|---|---|
+| clap (`f.clap`) | `MOTION_AUDIO_CLAP_COOLDOWN_MS` = 800ms | `AUDIO_CLAP_RECOIL` always |
+| STRONG rising edge | `MOTION_AUDIO_STRONG_COOLDOWN_MS` = 1400ms | `AUDIO_STRONG_BURST` or `EXCITED_TRIPLE`, 50/50 ("two- or three-pulse") |
+| ACTIVE rising edge | `MOTION_AUDIO_ACTIVE_COOLDOWN_MS` = 700ms | see speech dynamics below |
 
-While the band is QUIET (or a trigger is on cooldown), AUDIO_REACTIVE mode
-runs the *exact same* idle-timer logic as IDLE_ALIVE — deliberately no
+**ACTIVE reaction / speech dynamics:** a single ACTIVE trigger picks
+`AUDIO_ACTIVE_PULSE` (one medium pulse) or, with `MOTION_ACTIVE_NOD_CHANCE`
+= 40% chance, `FORWARD_REVERSE_NOD` (a two-pulse "conversational nod")
+instead. Separately, a **bounded counter** (`recentActiveTriggerCount`,
+reset whenever `MOTION_SPEECH_WINDOW_MS` = 4000ms passes without a new
+one — a fixed-size counter + timestamp, never a queue, never unbounded)
+tracks how many ACTIVE events have fired recently; once it reaches
+`MOTION_SPEECH_GROUP_THRESHOLD` = 3 within that window, there's a
+`MOTION_SPEECH_GROUP_CHANCE` = 35% chance of using a livelier grouped
+pattern (`EXCITED_TRIPLE` or `DOUBLE_TWITCH`, 50/50) instead of an
+ordinary single/nod reaction — "several ACTIVE events in a bounded window
+allow an occasional conversational grouped movement rather than identical
+single pulses". The counter resets whenever it actually triggers a
+grouped pattern, so this can't fire repeatedly back-to-back.
+
+While the band is QUIET (or every trigger is on cooldown), `AUDIO_REACTIVE`
+runs the *exact same* idle-timer + weighted-pattern-selection logic as
+`IDLE_ALIVE` (including the `SETTLE` chance above) — deliberately no
 separate code path, so "defer to IDLE_ALIVE behavior" is structural, not
 duplicated logic.
 
-## 6. LED coordination
+## 7. LED coordination
 
 Reuses `MotorPowerGuard`'s existing, already-validated `DIM_DURING_MOTION`
 mode (see `docs/DRV8833_MOTOR_BRINGUP.md` section 21) at whatever test
@@ -179,7 +287,7 @@ rather than refactor the effects engine if an accent can't be added
 cleanly, **only brightness coordination (the existing `DIM_DURING_MOTION`
 mode) is implemented; no accent exists.**
 
-## 7. Commands
+## 8. Commands
 
 `motion` is a **word command** (Enter-terminated, dispatched through
 `Controls.cpp`'s existing line parser — see Architecture above), chosen
@@ -196,42 +304,56 @@ in `Controls.cpp`) is already fully committed.
 | `motion status` | prints the same `[MOTION]` line `?` includes |
 | `motion demo` | runs the one-shot demo below |
 
-`?` also always includes a `[MOTION]` line: mode, phase, direction, ms
-until the next eligible movement, audio band, both cooldowns remaining,
-whether the demo is active, `MotorPowerGuard` state, the current
-motion-motion LED brightness, and whether motion is currently inhibited
-by an emergency stop.
+`?` also always includes a `[MOTION]` line: mode, phase, **active pattern,
+current step (n/total), time remaining in the current step**, direction,
+ms until the next eligible movement, audio band, all three cooldowns
+remaining (active/strong/clap), **last selected pattern**, whether the
+demo is active, `MotorPowerGuard` state, the current motion-motion LED
+brightness, and whether motion is currently inhibited by an emergency
+stop — one line, printed only on demand (`?`/`motion status`), never a
+continuous log.
 
-## 8. `motion demo`
+## 9. `motion demo`
 
-A one-shot, non-blocking demonstration, independent of whatever
-`ExpressiveMotionMode` was selected before it ran (saved and restored on
-normal completion):
+Expanded to demonstrate the new pattern families in a controlled order,
+independent of whatever `ExpressiveMotionMode` was selected before it ran
+(saved and restored on normal completion, not on emergency cancel):
 
 ```
 [MOTION DEMO] Preparing
-[MOTION DEMO] Gentle forward
+[MOTION DEMO] Pattern: GENTLE_SWAY
+[MOTION DEMO] Pattern: MEDIUM_SWAY
+[MOTION DEMO] Pattern: DOUBLE_TWITCH
+[MOTION DEMO] Pattern: FORWARD_REVERSE_NOD
+[MOTION DEMO] Pattern: EXCITED_TRIPLE
+[MOTION DEMO] Pattern: DRAMATIC_SWEEP
+[MOTION DEMO] Pattern: AUDIO_CLAP_RECOIL
 [MOTION DEMO] Stop
-[MOTION DEMO] Gentle reverse
-[MOTION DEMO] Stop
-[MOTION DEMO] Curious movement
-[MOTION DEMO] Restoring
 [MOTION DEMO] Complete
 ```
 
-("Curious movement" is itself a forward pulse, a full 200ms stop, then a
-reverse pulse — the same two-pulse-with-a-stop-between pattern as an
-ordinary curious double movement, matching the STRONG audio-reaction
-shape.) Refuses to start while any of `2`/`3`/`5`/`6` is active or while
-already running; pauses ordinary expressive movement first if it happened
-to be mid-pulse; cancels immediately and completely via `k` (does **not**
-restore the previous mode on emergency cancel — it forces `OFF`, same as
-every other emergency-stop path); never repeats automatically.
+Reuses the exact same per-step engine as ordinary movement (see section
+4) — the demo is just a fixed sequence of pattern selections
+(`DEMO_SEQUENCE` in `ExpressiveMotion.cpp`) instead of a random one, with
+a visible `MOTION_DEMO_INTER_PATTERN_PAUSE_MIN/MAX_MS` = 400–600ms pause
+between each pattern so every demonstration reads as separate from the
+next. One `requestMotorPower()`/`releaseMotorPower()` pair wraps the
+*entire* sequence (not one per pattern) — LEDs stay dimmed continuously
+through the whole demo rather than flickering back to full brightness
+between each pattern. Takes roughly 10-11 seconds end to end at the
+default timing ranges.
+
+Refuses to start while any of `2`/`3`/`5`/`6` is active or while already
+running; pauses ordinary expressive movement first if it happened to be
+mid-pattern; cancels immediately and completely via `k` from any pattern
+or pause (verified: mid-`EXCITED_TRIPLE`-ish and mid-`DRAMATIC_SWEEP`-ish
+windows both cancel cleanly, motor stopped, `MotorPowerGuard` released,
+`FULL_MUTE` restored); never repeats automatically.
 
 **Does not itself claim the resulting movement looks natural** — that is
 exactly what physical testing is for.
 
-## 9. Emergency-stop behavior
+## 10. Emergency-stop behavior
 
 `k` (via `main.cpp`'s existing `serviceEmergencyStop()` latch) now also
 calls `cancelExpressiveMotion()`, which:
@@ -260,7 +382,17 @@ by the `?`-status regression check, not by inspection. Fixed by restoring
 `forceReleaseOrdinaryMovement()`, `forceReleaseDemo()`); re-validated —
 `?` now shows `mode=FULL_MUTE` after any expressive-motion release.
 
-## 10. Safety review (software-checked)
+**Mode-switch cancellation:** `setExpressiveMotionMode()` now calls
+`forceReleaseOrdinaryMovement()` on **every** transition, not just when
+switching to `OFF` — switching directly between `IDLE_ALIVE` and
+`AUDIO_REACTIVE` while a pattern is mid-flight now cancels it safely
+(motor stop + `MotorPowerGuard` release) and re-rolls fresh idle timing,
+rather than letting the in-flight pattern finish under the old mode as an
+earlier version of this module did. Verified: `motion idle` → `motion
+audio` while a pulse was actively energized correctly returned to
+`phase=IDLE`, `pattern=NONE`, `powerGuardState=IDLE` immediately.
+
+## 11. Safety review (software-checked)
 
 - `MotorDriver` remains the sole GPIO8/GPIO9 owner — `ExpressiveMotion.cpp`
   only calls its exported functions.
@@ -270,53 +402,84 @@ by the `?`-status regression check, not by inspection. Fixed by restoring
   `Serial.read()`/`available()` owner — `motion`/`motion demo` are parsed
   entirely inside `Controls.cpp`'s existing line buffer.
 - No `delay()` anywhere in `ExpressiveMotion.cpp`.
-- No instantaneous polarity reversal: every direction change (ordinary
-  pulses, curious double movements, and the demo) passes through
-  `motorStop()` first, with a real stop interval before the next
-  `motorForward()`/`motorReverse()`.
-- Every pulse is well under the existing 2000ms max-energized safeguard
-  (100–220ms ordinary, 200ms demo segments).
+- No instantaneous polarity reversal: every pattern's step table has a
+  `STOP` between any two `MOVE_*` steps (verified by inspection of every
+  table) — a real stop interval before the next
+  `motorForward()`/`motorReverse()`, always.
+- Every pulse tier is well under the existing 2000ms max-energized
+  safeguard (120–550ms across all tiers), additionally backstopped by a
+  new `MOTION_MAX_ENERGIZED_MS` = 2000ms defensive ceiling that force-stops
+  any single continuous segment that somehow exceeded it.
 - `k` cancels expressive motion and `motion demo` reliably and forces
-  `OFF` (verified: emergency stop mid-demo, mid-pulse).
+  `OFF` (verified: emergency stop mid-demo across two different pattern
+  windows, mid-ordinary-pulse).
 - Diagnostics `2`/`3`/`5`/`6` have priority — expressive motion cannot
-  start or continue while any is active (verified both directions).
+  start or continue while any is active (verified both directions,
+  including catching a live `MOVING` phase and confirming `2` was
+  silently refused).
 - Existing LED effects, button behavior, and audio logging default are
   completely unchanged when expressive motion is `OFF` (the default).
 - No out-of-range LED access, no duplicate `strip.show()` ownership (this
   feature never touches `strip` at all).
 - No reset, watchdog, panic, or brownout observed during any test run.
 
-## 11. Physical validation checklist (not yet performed)
+## 12. Physical validation checklist (not yet performed)
 
-- Run `motion demo` and observe: does the "gentle forward"/"gentle
-  reverse"/"curious movement" sequence look reasonable given the belt/
-  mechanism, or do the pulse durations need retuning?
+- Run `motion demo` and observe each pattern in turn: does `GENTLE_SWAY`
+  through `DRAMATIC_SWEEP` read as a clear progression from subtle to
+  strong given the belt/mechanism, or do the tiers need retuning?
+- Is `DRAMATIC_SWEEP` (the strongest idle pattern) actually strong enough
+  to look "dramatic", or does it need a higher `MOTION_DRAMATIC_PULSE_MAX_MS`?
+- Does any pattern (especially `DRAMATIC_SWEEP` or `LONG_LEAN`, the
+  longest single pulses) strain the belt or mechanism?
+- Is `LONG_LEAN`'s single dramatic-tier pulse too long for a clean lean,
+  or does it look right?
+- Does `EXCITED_TRIPLE` (or a STRONG/speech-grouped reaction using it)
+  feel too fast, or does `MOTION_MICRO_PAUSE_MIN/MAX_MS` give it enough
+  visible separation between pulses?
+- Are the `STOP` pauses between direction reversals (micro-pause and
+  extended-pause tiers) long enough for the mechanism to fully settle
+  before reversing, or do they need lengthening?
 - With `motion idle` enabled for an extended period, observe: does the
-  idle timing feel "alive" rather than mechanical? Does the
-  no-more-than-2-consecutive-same-direction rule produce visible variety?
+  weighted mix of all seven patterns feel "alive" rather than either
+  frantic or monotonous? Does the no-more-than-2-consecutive-same-
+  direction rule produce visible variety?
 - With `motion audio` enabled, play sounds at varying levels and observe:
-  does QUIET correctly fall back to idle-like behavior, does ACTIVE
-  produce occasional single pulses, does STRONG (or a clap) produce the
+  does QUIET correctly fall back to idle-like behavior (with occasional
+  `SETTLE` after recent activity), does ACTIVE feel conversational
+  (single pulse or nod), does STRONG (or a clap) produce the
   two-pulse reaction, and does a sustained loud sound avoid holding the
   motor energized?
+- Does STRONG feel noticeably more energetic than ACTIVE, and does clap
+  recoil feel like a natural, distinct "startled" reaction rather than
+  just another STRONG burst?
 - Confirm LEDs remain visibly active (not full-strip white, not frozen)
   throughout motion at the current `4`-selected brightness level, and
-  that they visually restore correctly after each movement.
-- Confirm `k` physically halts the flower immediately from every mode and
-  phase, and that it does not resume moving on its own afterward.
+  that they visually restore correctly after each movement -- is the
+  dimming during motion still acceptable at the new, more frequent
+  movement rate?
+- Confirm `k` physically halts the flower immediately from every mode,
+  phase, and pattern (including mid-`DRAMATIC_SWEEP`, mid-`EXCITED_TRIPLE`),
+  and that it does not resume moving on its own afterward.
 - Confirm no audible motor strain, stalling, or excessive current draw
-  during repeated short pulses.
+  during repeated short pulses, particularly the closely-spaced pulses in
+  `EXCITED_TRIPLE`, `DRAMATIC_SWEEP`, and `AUDIO_STRONG_BURST`.
 - Only after the above is reviewed should `motion idle` or `motion audio`
   be left running for extended unattended operation.
 
-## 12. Known limitations
+## 13. Known limitations
 
-- No motion accent (see section 6) — deferred, not implemented.
-- Timing constants are conservative defaults, not yet tuned against the
-  physical mechanism.
+- No motion accent (see section 7) — deferred, not implemented.
+- Timing tiers, weights, cooldowns, and thresholds throughout section 4-6
+  are conservative starting values, not yet tuned against the physical
+  mechanism -- expect every range to need adjustment after physical
+  testing (see the checklist above).
 - `AUDIO_REACTIVE` has not been validated against real audio content of
   varying character (music vs. speech vs. claps) — only against a quiet
   room (no false triggers observed) in software validation.
+- Speech-dynamics grouping (section 6) has not been validated against
+  real sustained speech -- only that the counter/window logic itself
+  behaves correctly and stays bounded.
 - Expressive-motion mode is not persisted (NVS) — always boots to `OFF`.
   See TASK 9's roadmap note on `?` status persistence if this becomes
   desirable later.
@@ -332,7 +495,7 @@ No GPIO pins have been assigned beyond what's already confirmed working in
 button/switch code, and no changes to the `v1.0.0` tag were made as part
 of this planning.
 
-## 13. Milestone phases
+## 14. Milestone phases
 
 ```
 Phase 1 — v1.0 verified embedded baseline                 [DONE, tagged v1.0.0]
@@ -344,10 +507,10 @@ Phase 5 — Raspberry Pi/LLM speech integration               [NOT STARTED]
 ```
 
 **Phase 3 must begin only after Phase 2's movement behaviors are
-physically approved** (see section 11's checklist and section 20's
+physically approved** (see section 12's checklist and section 21's
 physical bring-up order).
 
-## 14. Future announcement architecture (planning only)
+## 15. Future announcement architecture (planning only)
 
 Central API — nothing in the codebase should call speaker/I2S functions
 directly; every module (button handlers, `Controls.cpp`, expressive
@@ -370,7 +533,7 @@ void cancelAnnouncement();
 void updateAnnouncementSystem(uint32_t nowMs);
 ```
 
-## 15. Two types of spoken output (planning only)
+## 16. Two types of spoken output (planning only)
 
 **A. Local pre-recorded announcements** (flash/local storage, work
 without a Raspberry Pi/network/LLM): "Muted", "Unmuted", "Brightness
@@ -391,7 +554,7 @@ higher-level processor. Candidate transports (none chosen yet):
 which transport is chosen — the higher-level computer should never be a
 dependency for `k` to work.
 
-## 16. I2S resource ownership (planning only)
+## 17. I2S resource ownership (planning only)
 
 The INMP441 currently owns `I2S_NUM_0` for receive. Before integrating a
 MAX98357A (or whatever amplifier photographing the board confirms),
@@ -415,7 +578,7 @@ or carefully coordinated sharing of one controller is **not yet
 determined** — do not assume they can safely share clocks or a port
 without testing.
 
-## 17. Feedback prevention (planning only)
+## 18. Feedback prevention (planning only)
 
 The INMP441 will hear the speaker when it talks. Minimum planned
 behavior, gated by a visible playback state:
@@ -431,7 +594,7 @@ overlay, keep microphone sampling running if useful for other purposes.
 The sunflower must never be able to trigger its own audio-reactive
 movement repeatedly from its own speaker.
 
-## 18. Announcement priorities (planning only)
+## 19. Announcement priorities (planning only)
 
 A small, bounded, fixed-size queue (no dynamic allocation):
 
@@ -445,7 +608,7 @@ announces only the final selected value; emergency stop cancels
 noncritical speech; speech must never block `motorStop()`, LED rendering,
 serial service, or button processing.
 
-## 19. LED/movement synchronization during speech (planning only)
+## 20. LED/movement synchronization during speech (planning only)
 
 Future ideas only, not implemented: a subtle mouth-like/center-petal LED
 pulse based on playback amplitude, gentle short nods between phrases, no
@@ -455,7 +618,7 @@ to emergency stop, the max-energized safeguard, `MotorPowerGuard`, and
 diagnostic mutual exclusion — the same rules everything else already
 follows.
 
-## 20. Future physical bring-up order (planning only)
+## 21. Future physical bring-up order (planning only)
 
 1. Finish and physically approve expressive motion (this branch).
 2. Confirm amplifier model and photograph both sides.
@@ -477,7 +640,7 @@ directly to ESP32 ground unless that exact amplifier board's
 documentation explicitly requires it (MAX98357A speaker output is
 normally bridge-tied, i.e. neither terminal is ground-referenced).
 
-## 21. Future optional buttons 5 and 6 (planning only)
+## 22. Future optional buttons 5 and 6 (planning only)
 
 One or two additional momentary pushbuttons may be added later, through
 the existing `Controls.cpp` debounce architecture — **not** yet wired,
@@ -503,7 +666,7 @@ setting announcements on/off; long press is a future push-to-talk/explicit
 listening request; double press repeats the most recent announcement.
 
 Once the amplifier exists, Button 5/6 actions would request announcements
-through the central API in section 14 (e.g. "Movement off", "Idle
+through the central API in section 15 (e.g. "Movement off", "Idle
 movement", "Voice prompts on", "Listening") — never play audio directly
 from a button handler.
 
@@ -520,7 +683,7 @@ limited; long press fires once per hold; double press must not also fire
 the short-press action unless deliberately designed as delayed
 single-click handling.
 
-## 22. Future latching switches (planning only)
+## 23. Future latching switches (planning only)
 
 One or two panel-mounted latching switches (as an alternative to momentary
 buttons) for conversation/voice controls — treated as **persistent
@@ -567,12 +730,12 @@ initialized; print one concise boot line per switch once sampled.
 
 **Conversation safety (future):** even while conversation mode is
 enabled, suppress speech recognition while the speaker is actively
-talking (`SPEAKING`/`POST_SPEECH_COOLDOWN`, section 17), preventing the
+talking (`SPEAKING`/`POST_SPEECH_COOLDOWN`, section 18), preventing the
 sunflower from transcribing its own voice; emergency stop and all
 real-time controls remain responsive regardless; optionally return to
 listening automatically after the cooldown.
 
-## 23. GPIO ownership table
+## 24. GPIO ownership table
 
 Confirmed, currently wired (unchanged by this branch):
 

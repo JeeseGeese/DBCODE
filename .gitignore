@@ -7,6 +7,15 @@ compile_commands.json
 # VS Code
 .vscode/
 
+# JetBrains IDEs (CLion, etc.) / local IDE-CDT viewer state
+.idea/
+*.iml
+
+# Editor swap files
+*.swp
+*.swo
+.*.swp
+
 # Linux
 .DS_Store
 Thumbs.db
@@ -29,10 +38,13 @@ dist/
 *.hex
 *.map
 
-# Logs and temporary files
+# Logs and temporary files (including serial-monitor captures)
 *.log
 *.tmp
 serial_*.txt
+serial_*.log
+*.serial.txt
+capture_*.txt
 
 # Secrets and environment files
 .env

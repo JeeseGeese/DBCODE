@@ -22,9 +22,13 @@ struct AudioFeatures {
   // END HARDWARE TEST SUPPORT
 };
 
-// I2S init (same verified INMP441 config as before: I2S_NUM_0, 16kHz,
-// 32-bit word / 24-bit left-justified, LEFT channel). Prints its own
-// success/failure diagnostics. Returns true on success.
+// Verifies the shared full-duplex I2S bus (see include/SharedI2S.h,
+// I2S_NUM_0, 16kHz, 32-bit-per-slot, stereo RIGHT_LEFT) is ready and sets
+// up microphone processing state -- does NOT install or configure the I2S
+// driver itself; call initSharedI2S() first. Extracts only the mic's
+// active slot (Config.h's MIC_I2S_SLOT_INDEX) from each stereo RX frame,
+// preserving the original 24-bit-left-justified sample interpretation.
+// Prints its own success/failure diagnostics. Returns true on success.
 bool initAudioAnalyzer();
 
 // Must be called every loop() iteration, unconditionally (including while

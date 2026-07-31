@@ -41,3 +41,52 @@ void motorForwardMs(uint32_t ms);
 
 // Blocking helper: drives reverse for `ms` milliseconds, then stops.
 void motorReverseMs(uint32_t ms);
+
+// ----------------------------------------------------------------------------
+// PWM support -- temporary, for the manual PWM calibration test (see
+// include/MotorPwmCalibration.h). Uses the installed ESP32 Arduino core's
+// LEDC API (channel-based: ledcSetup/ledcAttachPin/ledcWrite(channel, ...) --
+// verified against the actual installed framework-arduinoespressif32
+// package, not assumed from a newer or older core version). GPIO8/GPIO9
+// remain the only pins touched; motorPWM*() below simply attaches them to
+// LEDC channels instead of driving them with digitalWrite.
+//
+// While PWM is active (between initMotorPWM() and deinitMotorPWM()), the
+// plain digitalWrite-based functions above (motorForward/motorReverse/
+// motorStop/motorBrake) must not be relied on -- the pins are routed through
+// the LEDC peripheral, not GPIO output registers. deinitMotorPWM() detaches
+// LEDC and restores GPIO8/GPIO9 to plain digital outputs driven LOW (the
+// same state motorStop()/initMotor() leave them in), so ordinary MotorDriver
+// control resumes working normally once it returns.
+// ----------------------------------------------------------------------------
+
+// Configures LEDC channels for GPIO8 (IN1) and GPIO9 (IN2) at `freqHz`/
+// `resolutionBits` and attaches both pins to them, duty initially 0 (LOW).
+// Safe to call repeatedly -- a no-op while already active. Returns the
+// actual LEDC frequency the hardware was able to configure (may differ
+// slightly from `freqHz` depending on resolution/clock divisors).
+uint32_t initMotorPWM(uint32_t freqHz, uint8_t resolutionBits);
+
+// Detaches GPIO8/GPIO9 from LEDC and returns them to plain digital outputs,
+// driven LOW -- equivalent to motorStop(), and required before any
+// digitalWrite-based MotorDriver function is used again. Safe to call
+// repeatedly -- a no-op while already inactive.
+void deinitMotorPWM();
+
+// True between initMotorPWM() and deinitMotorPWM().
+bool isMotorPWMActive();
+
+// Forward at PWM `duty` (0-2^resolutionBits-1, e.g. 0-255 at 8-bit): IN1=PWM,
+// IN2=0 (LOW). Requires initMotorPWM() to have been called first.
+void motorPWMForward(uint8_t duty);
+
+// Reverse at PWM `duty`: IN1=0 (LOW), IN2=PWM. Requires initMotorPWM().
+void motorPWMReverse(uint8_t duty);
+
+// Coasts: both LEDC channels driven to 0 duty (electrically equivalent to
+// motorStop()). Requires initMotorPWM().
+void motorPWMCoast();
+
+// The actual LEDC frequency configured by the most recent initMotorPWM()
+// call (0 if PWM has never been initialized).
+uint32_t getMotorPWMFrequency();

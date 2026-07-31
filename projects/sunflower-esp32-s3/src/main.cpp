@@ -9,12 +9,23 @@
 #include "Controls.h"
 #include "LedEffects.h"
 #include "VisualCue.h"
+// BEGIN HARDWARE TEST
+#include "HardwareTest.h"
+// END HARDWARE TEST
+// BEGIN MIC RETEST
+#include "MicRetest.h"
+// END MIC RETEST
 #include "BehaviorEngine.h"
 #include "ExpressiveMotion.h"
 #include "MotorBehavior.h"
 #include "MotorDriver.h"
 #include "MotorPowerGuard.h"
 #include "MotorPriorityMode.h"
+#include "MotorPwmCalibration.h"
+#include "DanceEngine.h"
+#include "MusicMotorController.h"
+#include "SharedI2S.h"
+#include "SpeakerTest.h"
 
 // Temporary test-only serial interface for MotorBehavior (Task 5 of the
 // motor bring-up plan, see docs/DRV8833_MOTOR_BRINGUP.md section 13). Set
@@ -71,6 +82,16 @@ void setup() {
   delay(300); // brief startup delay so a host-side terminal can attach
 
   Serial.println(F("[SYSTEM] Sunflower LED controller starting"));
+  // Revision 9 -- printed once at every boot so a captured serial log can
+  // always be matched back to the exact firmware that produced it (see
+  // Config.h's "Firmware identity" comment -- added after a physical-test
+  // log was mistaken for a then-current build when it actually predated
+  // several revisions).
+  Serial.printf("[SYSTEM] Firmware: %s\n", FIRMWARE_REVISION_TAG);
+  Serial.printf("[SYSTEM] Build: %s\n", FIRMWARE_BUILD_IDENTIFIER);
+  Serial.printf("[SYSTEM] MusicMotor feature revision: %s\n", FIRMWARE_MUSIC_MOTOR_FEATURE_REVISION);
+  Serial.printf("[SYSTEM] MusicMotor genre profile: EDM_DUBSTEP (relative drop detection default: %s)\n",
+                MUSIC_MOTOR_RELATIVE_DROP_ENABLED_DEFAULT ? "ON" : "OFF");
 
   initLedEffects();
 
@@ -82,12 +103,38 @@ void setup() {
   strip.clear();
   strip.show(); // LEDs start fully off during init
 
+  // One shared full-duplex I2S bus (I2S_NUM_0) serves both the microphone
+  // (RX) and speaker (TX) -- see include/SharedI2S.h. This is the single
+  // i2s_driver_install()/i2s_set_pin() call for that port; neither
+  // initAudioAnalyzer() nor initSpeakerTest() below configures the driver
+  // themselves, only initSharedI2S() does.
+  bool sharedI2SReady = initSharedI2S();
+  if (!sharedI2SReady) {
+    Serial.println(F("[SYSTEM] WARNING: shared I2S bus unavailable -- microphone and speaker will both be inactive"));
+  }
+
   bool micReady = initAudioAnalyzer();
   if (!micReady) {
     Serial.println(F("[SYSTEM] WARNING: microphone unavailable -- audio overlays will have no input"));
   }
 
+  initSpeakerTest();
+
   initControls();
+
+  // BEGIN HARDWARE TEST
+  // Temporary bring-up verification -- see include/HardwareTest.h for scope
+  // and removal instructions. Runs once, blocking, before the normal loop()
+  // begins; does not alter any state loop() depends on.
+  runHardwareTestSequence(strip);
+  // END HARDWARE TEST
+
+  // BEGIN MIC RETEST
+  // Dedicated mic-only diagnostic -- see include/MicRetest.h for scope and
+  // removal instructions. Runs once, blocking, after the HardwareTest
+  // sequence above and before the normal loop() begins.
+  runMicRetest();
+  // END MIC RETEST
 
   // Small one-shot startup verification: confirms the DRV8833 responds in
   // both directions right after the rest of Sunflower has initialized,
@@ -105,6 +152,9 @@ void setup() {
   initMotorPowerGuard();
   initMotorBehavior();
   initMotorPriorityMode();
+  initMotorPwmCalibration();
+  initDanceEngine();
+  initMusicMotorController();
   initExpressiveMotion();  // resets to ExpressiveMotionMode::OFF -- user must explicitly enable
   initBehaviorEngine();    // resets to BehaviorState::MANUAL -- user must explicitly select a state
 #if ENABLE_MOTOR_BEHAVIOR_TEST
@@ -115,9 +165,22 @@ void setup() {
   Serial.println(F("[MOTOR+LED TEST] Serial command: '5' = experimental motor+dim-LED coexistence test (forward+reverse)"));
   Serial.println(F("[LED MAP] Serial command: '6' = LED index mapping tool (color test + interactive index walk)"));
   Serial.println(F("[AUDIO LOG] Serial command: '7' = toggle continuous audio serial output (default OFF)"));
+  Serial.println(F("[SPEAKER] Word commands (Enter-terminated): 't' = 440Hz test tone, 's' = 440Hz square wave"));
+  Serial.println(F("[SPEAKER] Word commands: low/mid/high/sweep/melody/beep/noise/loud -- diagnostic suite, see README"));
+  Serial.println(F("[SPEAKER] Word commands: music1/music2/music3/music4 (loop), stopmusic -- see README"));
   Serial.println(F("[MOTION] Word commands: 'motion' = cycle mode, 'motion off/idle/audio/status/demo' -- see README"));
   Serial.println(F("[BEHAVIOR] Word commands: 'behavior' = status+help, 'behavior "
                     "manual/idle/curious/listening/pondering/excited/sleeping/next/status/demo' -- see README"));
+  Serial.println(F("[MOTOR PWM TEST] Word commands: 'mf'/'mr' select direction, 'm20'..'m100' run at that %, "
+                    "'mstop' coast+cancel, 'mramp'/'mcycle' automatic tests, 'mkick' toggle startup kick, "
+                    "'mstatus' full status -- see README"));
+  Serial.println(F("[DANCE ENGINE] Word commands: 'danceon'/'danceoff' enable/disable live mic-driven dancing "
+                    "(80-100% active range), 'dancestatus' full status, 'dancetest'/'dancetestoff' deterministic "
+                    "simulated sequence, 'dancequiet'/'dancemid'/'dancehigh'/'dancepeak' simulated overrides -- see README"));
+  Serial.println(F("[MUSIC MOTOR] Word commands: 'musicmotor on'/'musicmotor off' enable/disable music-reactive "
+                    "dance-phrase movement (slow sway -> bass hit -> hip shake -> slowdown), 'musicmotor status' "
+                    "full status, 'musicmotor slow/fast/hitthreshold/beatthreshold/accel/hold/decel <value>' "
+                    "temporary tuning -- see README"));
 #endif
 
   lastFrameTime = millis();
@@ -228,10 +291,13 @@ const char *priorityTestPhaseName(PriorityTestPhase p) {
 
 void startPriorityTest() {
   // Mutually exclusive with the '3' breakaway test, the '5' motor+LED
-  // coexistence test, the '6' LED map, and expressive motion/'motion demo'
-  // (all defined below) -- all drive the motor and/or write LEDs directly.
+  // coexistence test, the '6' LED map, expressive motion/'motion demo', and
+  // the manual PWM calibration test ('mf'/'mr'/'m##'/'mramp'/'mcycle' --
+  // see include/MotorPwmCalibration.h) -- all drive the motor and/or write
+  // LEDs directly.
   if (priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving() ||
+      isMotorPwmCalibrationActive() || isDanceEngineActive() || isMusicMotorControllerActive()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -375,11 +441,12 @@ void breakawayStop() {
 
 void startBreakawayTest() {
   // Mutually exclusive with the '2' priority test, the '5' motor+LED
-  // coexistence test, the '6' LED map, and expressive motion/'motion demo'
-  // -- all drive the motor and/or write LEDs directly; running more than
-  // one at a time would fight over both.
+  // coexistence test, the '6' LED map, expressive motion/'motion demo', and
+  // the manual PWM calibration test -- all drive the motor and/or write
+  // LEDs directly; running more than one at a time would fight over both.
   if (breakawayPhase != BreakawayPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving() ||
+      isMotorPwmCalibrationActive() || isDanceEngineActive() || isMusicMotorControllerActive()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -539,9 +606,11 @@ void updateBreakawayTest() {
 unsigned long motorLedTestPhaseStartMs = 0;
 
 void startMotorLedTest() {
-  // Mutually exclusive with '2'/'3'/'6' and expressive motion -- see their own guards above.
+  // Mutually exclusive with '2'/'3'/'6', expressive motion, and the manual
+  // PWM calibration test -- see their own guards above.
   if (motorLedTestPhase != MotorLedTestPhase::IDLE || priorityTestPhase != PriorityTestPhase::IDLE ||
-      breakawayPhase != BreakawayPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving()) {
+      breakawayPhase != BreakawayPhase::IDLE || isLedMapActive() || isExpressiveMotionMoving() ||
+      isMotorPwmCalibrationActive() || isDanceEngineActive() || isMusicMotorControllerActive()) {
     return;
   }
   setMotorBehavior(MotorBehaviorMode::OFF);  // ensure IDLE_SWAY isn't concurrently driving the motor
@@ -696,9 +765,11 @@ void ledMapPrintCompletionReminder() {
 }
 
 void startLedMap() {
-  // Mutually exclusive with '2'/'3'/'5' and expressive motion -- see their own guards above.
+  // Mutually exclusive with '2'/'3'/'5', expressive motion, and the manual
+  // PWM calibration test -- see their own guards above.
   if (isLedMapActive() || priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
-      motorLedTestPhase != MotorLedTestPhase::IDLE || isExpressiveMotionMoving()) {
+      motorLedTestPhase != MotorLedTestPhase::IDLE || isExpressiveMotionMoving() || isMotorPwmCalibrationActive() ||
+      isDanceEngineActive() || isMusicMotorControllerActive()) {
     return;
   }
   Serial.println(F("[LED MAP] COLOR TEST: RED"));
@@ -874,7 +945,8 @@ void updateLedMap() {
 // above.
 bool isAnyMotorDiagnosticActive() {
   return priorityTestPhase != PriorityTestPhase::IDLE || breakawayPhase != BreakawayPhase::IDLE ||
-         motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive();
+         motorLedTestPhase != MotorLedTestPhase::IDLE || isLedMapActive() || isMotorPwmCalibrationActive() ||
+         isDanceEngineActive() || isMusicMotorControllerActive();
 }
 
 // ============================================================================
@@ -901,11 +973,20 @@ void serviceEmergencyStop() {
   cancelBreakawayTest();
   cancelMotorLedTest();
   cancelLedMap();
+  motorCalEmergencyCancel();  // coasts + detaches PWM + cancels every pending motor-test state; idempotent
+  cancelDanceEngine();       // coasts + detaches PWM + disables DanceEngine; idempotent, never auto-resumes
+  cancelMusicMotorController();  // coasts + detaches PWM + disables MusicMotorController; idempotent
   cancelExpressiveMotion();  // also forces expressive motion to DISABLED -- see its own comment
   stopBehaviorEngine();      // forces BehaviorState to MANUAL -- does not itself touch the motor (see its own comment)
+  stopSpeakerTest();         // immediately ends any playing speaker test tone, returns to digital silence
   stopMotorBehavior();
   motorStop();  // explicit backstop even though every path above already stops the motor via its own cancel
-  clearPendingSerialLine();  // discard any word-command line interrupted mid-type by this 'k'
+  // Defensive no-op in the common case: pollSerialDispatcher() now only
+  // triggers 'k' while isSerialLinePending() is false (see its own
+  // comment), so there's normally nothing pending here to discard. Kept as
+  // a harmless backstop in case emergencyStopLatched is ever set from
+  // another path in the future.
+  clearPendingSerialLine();
   emergencyStopLatched = false;
   Serial.println(F("[MOTOR] Stop"));
   Serial.println(F("[MOTOR BEHAVIOR] Emergency stop"));
@@ -945,10 +1026,15 @@ void triggerEmergencyStop() {
 // second reader for a byte to be stolen by, at any point in the loop()
 // iteration.
 //
-// 'k' is checked first, ahead of every other byte in the dispatch chain,
-// and triggers the emergency-stop latch (see triggerEmergencyStop() above
+// 'k' triggers the emergency-stop latch (see triggerEmergencyStop() above
 // loop()) rather than acting inline -- see that function's comment for why
-// a latch, not just an inline call sequence, is the safer shape here.
+// a latch, not just an inline call sequence, is the safer shape here. It is
+// checked in the same position every other reserved single-char command
+// occupies -- i.e. only once isSerialLinePending() below confirms no word
+// command is currently mid-type -- NOT unconditionally first as an earlier
+// revision of this comment described; see the isSerialLinePending() check
+// itself for why that changed (a 'k' inside a legitimately in-progress
+// command like "musicmotor peakthreshold" must not fire emergency-stop).
 //
 // This is still a `while` loop draining every consecutive byte in one
 // pass (not a single check per loop() iteration), which is what makes
@@ -958,10 +1044,15 @@ void triggerEmergencyStop() {
 // could still observe/act on intermediate state).
 //
 // Reserved set: f/k/0/1/2/3/4/5/6/7/? (checked against Controls.cpp's full
-// command set -- n,p,o,x,+,-,m,d,h,g,r,b,a,c,v, plus the word commands
-// effects/overlays/status -- with no collisions; two deliberate
-// substitutions from what was originally requested are documented in
-// README.md's Serial commands section: 's'->'k' and 'p'->'2').
+// command set -- n,p,o,x,+,-,m,d,h,g,r,b,a,c,v,t,s, plus the word commands
+// effects/overlays/status/motion/behavior/low/mid/high/sweep/melody/beep/
+// noise/loud -- with no collisions; two deliberate substitutions from what
+// was originally requested are documented in README.md's Serial commands
+// section: 's'->'k' and 'p'->'2'. 't'/'s' themselves moved from this
+// dispatcher's own reserved set into Controls.cpp's Enter-terminated
+// single-char switch after being found to intercept the first byte of any
+// word command starting with the same letter -- see Controls.cpp's own
+// comment at those two case labels).
 uint32_t g_interceptorTotalBytesSeen = 0;
 uint32_t g_interceptorKSeen = 0;
 uint32_t g_maxShowUs = 0;
@@ -972,12 +1063,45 @@ static void pollSerialDispatcher() {
     int c = Serial.read();  // the single Serial.read() call site in the entire program
     g_interceptorTotalBytesSeen++;
 
-    // 'k' is checked before anything else and unconditionally, even if
-    // Controls.cpp currently has a word-command line mid-type (see the
-    // isSerialLinePending() check below) -- it is the emergency-stop
-    // command and must never be absorbed into a line buffer under any
-    // circumstance (TASK 2: "k is checked first" / "k cannot be consumed
-    // by another parser").
+    // REVISED (see docs/DRV8833_MOTOR_BRINGUP.md, "command-5 emergency-stop
+    // investigation" for the original single-owner-Serial fix, still fully
+    // in effect below): 'k' used to be checked before anything else,
+    // unconditionally, even mid-word -- but that meant a 'k' that is
+    // legitimately part of an in-progress multi-character command (e.g.
+    // "musicmotor peakthreshold 0.65", which contains a 'k' inside "peak")
+    // fired emergency-stop mid-type, corrupting the command AND stopping
+    // the motor for no reason the user intended. 'k' is now checked in
+    // exactly the same position every OTHER reserved single-char command
+    // already occupied ('f', '0'-'7', '?') -- i.e. it only acts as
+    // emergency-stop when no line is currently pending (see
+    // isSerialLinePending() immediately below). This does not weaken 'k':
+    // a standalone 'k', or a 'k' typed before any word has started
+    // accumulating, is completely unaffected -- both are still serviced
+    // the instant the byte is read, with no Enter required. It also still
+    // fires while the LED-map tool owns the strip (see isLedMapActive()
+    // below), since that branch only runs once isSerialLinePending() is
+    // confirmed false. What changes is only the specific case of 'k'
+    // appearing as a character WITHIN an already-in-progress line -- that
+    // now belongs to the line, exactly like the 'f' inside "effects"
+    // already did (see the isSerialLinePending() comment below).
+    if (isSerialLinePending()) {
+      // If Controls.cpp is mid-word (e.g. typing "effects" or "musicmotor
+      // peakthreshold 0.65"), every byte -- including 'k' -- belongs to
+      // that line until '\n' terminates it, even if it would otherwise
+      // match a reserved single-char command below. This restores a
+      // property the original peek-based interceptor had by accident (it
+      // gave up entirely, handing off the *rest* of a burst to
+      // Controls.cpp, the moment it saw the first non-reserved byte) and
+      // that a naive "check every byte independently" version of this
+      // dispatcher lost: without it, "effects" broke, because its second
+      // character is 'f' -- a reserved byte -- and got intercepted as a
+      // motor-forward command instead of being forwarded, corrupting the
+      // word into "eects". There's still only one Serial.read() call site
+      // (this one), so this doesn't reintroduce the two-consumer race.
+      feedSerialByte((char)c);
+      continue;
+    }
+
     if (c == 'k' || c == 'K') {
       g_interceptorKSeen++;
       triggerEmergencyStop();
@@ -990,26 +1114,12 @@ static void pollSerialDispatcher() {
     // already refuse to start while it's active, and forwarding unrelated
     // bytes to Controls.cpp while the mapping tool has exclusive LED
     // control would be confusing. Every other byte is simply ignored here
-    // (not forwarded) for the same reason.
+    // (not forwarded) for the same reason. isSerialLinePending() is always
+    // false whenever this tool is active (every byte while it's active is
+    // consumed here, never handed to feedSerialByte()), so moving the 'k'
+    // check above this one doesn't change 'k''s ability to interrupt it.
     if (isLedMapActive()) {
       handleLedMapKey((char)c);
-      continue;
-    }
-
-    // If Controls.cpp is mid-word (e.g. typing "effects"), every other
-    // byte belongs to that line until '\n' terminates it -- even if it
-    // would otherwise match a reserved single-char command below. This
-    // restores a property the original peek-based interceptor had by
-    // accident (it gave up entirely, handing off the *rest* of a burst to
-    // Controls.cpp, the moment it saw the first non-reserved byte) and
-    // that a naive "check every byte independently" version of this
-    // dispatcher lost: without it, "effects" broke, because its second
-    // character is 'f' -- a reserved byte -- and got intercepted as a
-    // motor-forward command instead of being forwarded, corrupting the
-    // word into "eects". There's still only one Serial.read() call site
-    // (this one), so this doesn't reintroduce the two-consumer race.
-    if (isSerialLinePending()) {
-      feedSerialByte((char)c);
       continue;
     }
 
@@ -1059,6 +1169,8 @@ static void pollSerialDispatcher() {
                     isAudioLogEnabled() ? 1 : 0);
       printExpressiveMotionDebugState();
       printBehaviorStatus();
+      printSharedI2SStatus();
+      printSpeakerTestStatus();
       // Lightweight, permanent diagnostics (see the dispatcher's own
       // comment above) -- cheap counters/max-trackers, not per-frame
       // prints, so they don't perturb the timing they observe.
@@ -1084,6 +1196,7 @@ void loop() {
   updateBreakawayTest();       // non-blocking; no-op when the breakaway test isn't running
   updateMotorLedTest();        // non-blocking; no-op when the motor+LED coexistence test isn't running
   updateLedMap();              // non-blocking; no-op when the LED index mapping tool isn't running
+  updateMotorPwmCalibration(); // non-blocking; no-op when the manual PWM calibration test isn't running
   // Expressive motion never runs concurrently with a motor/LED diagnostic
   // -- pauseExpressiveMotion() releases the motor/MotorPowerGuard
   // immediately if it happened to be mid-pulse and holds it there
@@ -1113,6 +1226,25 @@ void loop() {
   // for the same window. See include/MotorPriorityMode.h.
   if (!isAudioProcessingSuspended()) {
     updateAudioAnalyzer();  // I2S capture + AudioFeatures; otherwise runs every iteration regardless of mute/frame pacing
+  }
+  // Reads AudioAnalyzer's AudioFeatures (no second mic pipeline) -- placed
+  // right after updateAudioAnalyzer() so it sees the freshest values each
+  // iteration. Non-blocking; no-op while DISABLED. Mutual exclusion with
+  // every other motor behavior/diagnostic is enforced at 'danceon' and by
+  // isAnyMotorDiagnosticActive() above, so this never needs a pause gate
+  // the way ExpressiveMotion does -- nothing else can become active while
+  // DanceEngine owns the motor.
+  updateDanceEngine(now);
+  // Same reasoning as updateDanceEngine() above -- reads AudioAnalyzer
+  // directly, mutual exclusion enforced at 'musicmotor on' and by
+  // isAnyMotorDiagnosticActive(), no pause gate needed.
+  updateMusicMotorController(now);
+  // Same suspension window as the microphone above -- minimizes system
+  // load during MotorPriorityMode's boot-equivalent timing test. Harmless
+  // either way: tx_desc_auto_clear keeps transmitting silence on the
+  // shared I2S bus even while this call is skipped.
+  if (!isAudioProcessingSuspended()) {
+    updateSpeakerTest(now);
   }
 
   if (now - lastFrameTime < FRAME_INTERVAL_MS) {

@@ -2,8 +2,16 @@
 #include <driver/i2s.h>
 #include <math.h>
 
+#include "SharedI2S.h"
+
 static bool micReady = false;
 static AudioFeatures features = {};
+
+// Temporary boot-time trace: prints the first few raw stereo RX frames
+// (both 32-bit slots, hex) plus the extracted mic-slot samples, so the
+// MIC_I2S_SLOT_INDEX choice in Config.h is confirmed against real captured
+// evidence rather than assumed. See the full-duplex refactor report.
+static int rxTraceCallsRemaining = 0;
 
 // --- Per-window accumulators (reset every MIC_PRINT_INTERVAL_MS) ---
 static uint32_t bytesThisWindow = 0;
@@ -62,50 +70,29 @@ static void resetWindow(unsigned long now) {
   lastWindowTime = now;
 }
 
+// Does NOT call i2s_driver_install()/i2s_set_pin() -- SharedI2S.cpp's
+// initSharedI2S() is the sole owner of I2S_NUM_0's configuration (see
+// include/SharedI2S.h). This function only verifies that shared bus is
+// ready and sets up the microphone's own processing state; call it after
+// initSharedI2S() has already succeeded.
 bool initAudioAnalyzer() {
-  i2s_config_t i2s_config = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-      .sample_rate = I2S_SAMPLE_RATE,
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-      // INMP441 outputs on the LEFT I2S slot when its L/R pin is tied to
-      // GND. Hardware-verified.
-      .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 4,
-      .dma_buf_len = 256,
-      .use_apll = false,
-      .tx_desc_auto_clear = false,
-      .fixed_mclk = 0,
-  };
-
-  esp_err_t err = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
-  if (err != ESP_OK) {
-    Serial.printf("[MIC] ERROR: I2S driver install failed (err=%d)\n", (int)err);
+  if (!isSharedI2SReady()) {
+    Serial.println(F("[MIC] ERROR: shared I2S bus not ready (initSharedI2S() must run first)"));
+    micReady = false;
     return false;
   }
 
-  i2s_pin_config_t pin_config = {
-      .mck_io_num = I2S_PIN_NO_CHANGE,
-      .bck_io_num = I2S_BCLK_PIN,
-      .ws_io_num = I2S_WS_PIN,
-      .data_out_num = I2S_PIN_NO_CHANGE,
-      .data_in_num = I2S_DIN_PIN,
-  };
-
-  err = i2s_set_pin(I2S_PORT, &pin_config);
-  if (err != ESP_OK) {
-    Serial.printf("[MIC] ERROR: I2S set pin failed (err=%d)\n", (int)err);
-    return false;
-  }
-
-  Serial.println(F("[MIC] I2S initialization: SUCCESS"));
+  Serial.println(F("[MIC] Using shared full-duplex I2S bus (I2S_NUM_0)"));
   Serial.printf("[MIC] Pins: BCLK=%d WS=%d DIN=%d\n", I2S_BCLK_PIN, I2S_WS_PIN, I2S_DIN_PIN);
   Serial.printf("[MIC] Sample rate: %d Hz\n", I2S_SAMPLE_RATE);
   Serial.println(F("[MIC] Bit depth: 32-bit I2S word (24-bit sample left-justified)"));
-  Serial.println(F("[MIC] Selected channel: LEFT"));
+  Serial.printf(
+      "[MIC] Channel format: RIGHT_LEFT (stereo, shared with speaker TX) -- extracting slot index %d in "
+      "software (L/R pin tied to GND; see Config.h's MIC_I2S_SLOT_INDEX and the boot-time RX trace below)\n",
+      MIC_I2S_SLOT_INDEX);
 
   micReady = true;
+  rxTraceCallsRemaining = MIC_RX_TRACE_CALL_COUNT;
   unsigned long now = millis();
   resetWindow(now);
   zeroByteStreak = 0;
@@ -127,7 +114,11 @@ const AudioFeatures &getAudioFeatures() { return features; }
 float getNoiseFloorEstimate() { return noiseFloorEstimate; }
 
 static void captureSamples() {
-  int32_t sampleBuf[128];
+  // 128 stereo FRAMES per read (256 words = 1024 bytes) -- doubled from the
+  // old mono buffer so the number of USABLE mic samples per call (128)
+  // matches the previous mono-only cadence, now that half of each frame is
+  // the inactive slot (see MIC_I2S_SLOT_INDEX in Config.h).
+  int32_t sampleBuf[256];
   size_t bytesRead = 0;
   // Short but non-zero timeout: a pure 0-tick poll can race the DMA's
   // buffer-ready signal. 20ms stays short enough to keep buttons/frames
@@ -147,13 +138,34 @@ static void captureSamples() {
   zeroByteWarned = false;
   bytesThisWindow += bytesRead;
 
-  int samples = bytesRead / sizeof(int32_t);
+  int wordsRead = bytesRead / sizeof(int32_t);
+  int frames = wordsRead / 2;  // stereo pairs; a stray trailing odd word (shouldn't happen) is dropped
   bool windowHasNonZero = false;
   bool windowHasNonSaturated = false;
 
-  for (int i = 0; i < samples; i++) {
-    // INMP441 left-justifies a 24-bit sample in the 32-bit I2S word.
-    int32_t s = sampleBuf[i] >> 8;
+  bool tracing = rxTraceCallsRemaining > 0;
+  if (tracing) {
+    int traceFrames = frames < 5 ? frames : 5;
+    Serial.printf("[MIC DIAG] RX trace call=%d/%d requestedBytes=%u bytesRead=%u frames=%d slotIndex=%d\n",
+                  MIC_RX_TRACE_CALL_COUNT - rxTraceCallsRemaining + 1, MIC_RX_TRACE_CALL_COUNT,
+                  (unsigned)sizeof(sampleBuf), (unsigned)bytesRead, frames, MIC_I2S_SLOT_INDEX);
+    Serial.print(F("[MIC DIAG] first stereo RX frames (hex, word0 word1):"));
+    for (int i = 0; i < traceFrames; i++) {
+      Serial.printf(" [%08lX %08lX]", (unsigned long)sampleBuf[2 * i], (unsigned long)sampleBuf[2 * i + 1]);
+    }
+    Serial.println();
+    Serial.print(F("[MIC DIAG] extracted mic samples (post right-shift):"));
+    for (int i = 0; i < traceFrames; i++) {
+      Serial.printf(" %ld", (long)(sampleBuf[2 * i + MIC_I2S_SLOT_INDEX] >> 8));
+    }
+    Serial.println();
+  }
+
+  for (int i = 0; i < frames; i++) {
+    // INMP441 left-justifies a 24-bit sample in its 32-bit slot; only the
+    // slot it actually occupies (MIC_I2S_SLOT_INDEX) carries real data --
+    // the other slot is ignored entirely.
+    int32_t s = sampleBuf[2 * i + MIC_I2S_SLOT_INDEX] >> 8;
 
     if (s < rawMin) rawMin = s;
     if (s > rawMax) rawMax = s;
@@ -176,6 +188,8 @@ static void captureSamples() {
     if (mag != 0) windowHasNonZero = true;
     if (mag < MIC_SATURATION_THRESHOLD) windowHasNonSaturated = true;
   }
+
+  if (tracing) rxTraceCallsRemaining--;
 
   if (windowHasNonZero) {
     lastNonZeroSampleTime = millis();

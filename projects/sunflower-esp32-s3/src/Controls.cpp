@@ -4,8 +4,13 @@
 #include "AutoShowcase.h"
 #include "BehaviorEngine.h"
 #include "ExpressiveMotion.h"
+#include "DanceEngine.h"
+#include "MusicMotorController.h"
+#include "MotorPwmCalibration.h"
+#include "SpeakerTest.h"
 #include "VisualCue.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Real measured frame rate, maintained by main.cpp; read here only for the
@@ -413,12 +418,44 @@ static void printHelp() {
   Serial.println(F("  motion [next|off|idle|audio|status|demo] = expressive motion (dev branch, see README)"));
   Serial.println(F("  behavior/beh [next|manual|idle|curious|listening|pondering|excited|sleeping|status|demo]"));
   Serial.println(F("           = personality-state coordinator (dev branch, see README)"));
+  Serial.println(F("  t/s = speaker sine/square 440Hz test tone (dev branch, see README)"));
+  Serial.println(F("  low|mid|high = speaker sine test at 150/440/1500Hz     sweep = 150->3000Hz log sweep"));
+  Serial.println(F("  melody = C5 E5 G5 C6 x2      beep = 1000Hz 150ms on/off x5      noise = white noise"));
+  Serial.println(F("  loud = [TEMPORARY DIAGNOSTIC] 1000Hz at 20% amplitude"));
+  Serial.println(F("  music1|music2|music3|music4 = Twinkle/Mary/Ode to Joy/Mario (loops until stopped)"));
+  Serial.println(F("  stopmusic = stop music playback, return to digital silence"));
   Serial.println(F("  g = [DIAGNOSTIC ONLY] force the enabled/green cue, no overlay state change"));
   Serial.println(F("  r = [DIAGNOSTIC ONLY] force the disabled/red cue, no overlay state change"));
   Serial.println(F("  b = [DIAGNOSTIC ONLY] toggle raw/debounced Button4 transition trace"));
   Serial.println(F("  a = toggle AUTO_SHOWCASE (jump to it, or back to the last normal effect)"));
   Serial.println(F("  c = force AUTO_SHOWCASE to its next effect now (no-op if not active)"));
   Serial.println(F("  v = print current audio visual-control state (level/bass/transient/derived bands, pool counts)"));
+  Serial.println(F("  mf/mr = select motor PWM-test direction forward/reverse     mstop = coast + cancel motor test"));
+  Serial.println(F("  m20|m30|...|m100 (any m1-m100) = run selected direction continuously at that % duty"));
+  Serial.println(F("  mramp = automatic PWM ramp test      mcycle = automatic dance-style speed/direction test"));
+  Serial.println(F("  mkick = toggle startup kick on/off   mstatus = full motor PWM-test status (dev branch, see README)"));
+  Serial.println(F("  danceon/danceoff = enable/disable live mic-driven Dance Engine (80-100% validated active range)"));
+  Serial.println(F("  dancestatus = full dance status      dancetest/dancetestoff = deterministic simulated sequence"));
+  Serial.println(F("  dancequiet|dancemid|dancehigh|dancepeak = temporarily simulate that energy band (dev branch, see README)"));
+  Serial.println(F("  musicmotor on/off = enable/disable music-reactive movement (intensity sway -> bass accent"));
+  Serial.println(F("           -> hip shake/extended spin -> decel)   musicmotor status = full status"));
+  Serial.println(F("  musicmotor intensity = energy/band/threshold snapshot   musicmotor spin = manual test spin"));
+  Serial.println(F("  musicmotor motion = physical calibration/tuning surface (floor, ranges, drop-hold, hip-shake, spin)"));
+  Serial.println(F("  musicmotor slow|fast|hitthreshold|beatthreshold|accel|hold|decel <value> = temporary tuning"));
+  Serial.println(F("  musicmotor lowthreshold|mediumthreshold|highthreshold <value> = intensity-band tuning"));
+  Serial.println(F("  musicmotor peakthreshold <0.0-1.0> = set PEAK threshold (validated: must exceed highthreshold)"));
+  Serial.println(F("  musicmotor bandpeak <0.0-1.0>    alias for peakthreshold, same underlying value"));
+  Serial.println(F("  musicmotor spintime|spincooldown <value> = spin tuning (does not persist through reboot; see README)"));
+  Serial.println(F("  musicmotor rotationhold <ms> = min time committed to a direction before an ordinary reversal (favor continuation)"));
+  Serial.println(F("  musicmotor debug on|off|status = detailed decision diagnostics (dropHold/band/strongHit/"));
+  Serial.println(F("           choreography evaluation lines); diagnostic only, never changes movement behavior"));
+  Serial.println(F("  musicmotor summary = revision 9 compact post-song session stats (band time, drops, phrases, max speed)"));
+  Serial.println(F("  musicmotor dropdetect on|off = revision 9 relative/song-adaptive (EDM/dubstep) drop-detection A/B toggle"));
+  Serial.println(F("  musicmotor dynamics status = revision 10 motion palette/duty-cycle/drop-phrase config surface"));
+  Serial.println(F("  musicmotor quietmotion on|off = revision 10 QUIET_BUILDUP subtle-sway toggle"));
+  Serial.println(F("  musicmotor switchchance <0-100>|switchcooldown <ms>|switchlimit <count> = revision 10 drop-phrase tuning"));
+  Serial.println(F("  musicmotor test = one-command physical-test setup (on+dropdetect+debug+quietmotion, summary reset)"));
+  Serial.println(F("  musicmotor test stop = ends test mode: prints summary, disables debug logging, stops safely"));
   Serial.println();
 }
 
@@ -573,6 +610,156 @@ static void dispatchBehaviorCommand(const char *args) {
   }
 }
 
+// "musicmotor" word command -- see include/MusicMotorController.h. `args`
+// is whatever follows "musicmotor" in the line (leading spaces stripped
+// below). Tuning subcommands ("slow"/"fast"/"hitthreshold"/"beatthreshold"/
+// "accel"/"hold"/"decel") each take one trailing numeric value and are
+// temporary physical-tuning aids -- values do not persist through reboot.
+static void dispatchMusicMotorCommand(const char *args) {
+  while (*args == ' ') args++;
+  if (strcasecmp(args, "on") == 0) {
+    musicMotorEnable();
+    return;
+  } else if (strcasecmp(args, "off") == 0) {
+    musicMotorDisable();
+    return;
+  } else if (strcasecmp(args, "status") == 0) {
+    musicMotorPrintStatus();
+    return;
+  } else if (strcasecmp(args, "intensity") == 0) {
+    musicMotorPrintIntensity();
+    return;
+  } else if (strcasecmp(args, "motion") == 0) {
+    musicMotorPrintMotion();
+    return;
+  } else if (strcasecmp(args, "summary") == 0) {
+    musicMotorPrintSummary();
+    return;
+  } else if (strncasecmp(args, "test", 4) == 0 && (args[4] == '\0' || args[4] == ' ')) {
+    // "musicmotor test" / "musicmotor test stop" -- one-command physical
+    // validation setup/teardown. No other subcommands under "test".
+    const char *testArg = args + 4;
+    while (*testArg == ' ') testArg++;
+    if (*testArg == '\0') {
+      musicMotorEnterTestMode();
+    } else if (strcasecmp(testArg, "stop") == 0) {
+      musicMotorExitTestMode();
+    } else {
+      Serial.printf("[CMD] Unknown 'musicmotor test' subcommand '%s' -- try: (none)|stop\n", testArg);
+    }
+    return;
+  } else if (strcasecmp(args, "spin") == 0) {
+    musicMotorTriggerSpin();
+    return;
+  } else if (strncasecmp(args, "dropdetect", 10) == 0 && (args[10] == '\0' || args[10] == ' ')) {
+    // "musicmotor dropdetect on|off" -- Revision 9 relative-drop A/B
+    // toggle, same word-subcommand shape as "musicmotor debug".
+    const char *dropArg = args + 10;
+    while (*dropArg == ' ') dropArg++;
+    if (strcasecmp(dropArg, "on") == 0) {
+      musicMotorSetRelativeDropEnabled(true);
+    } else if (strcasecmp(dropArg, "off") == 0) {
+      musicMotorSetRelativeDropEnabled(false);
+    } else {
+      Serial.printf("[CMD] Unknown 'musicmotor dropdetect' subcommand '%s' -- try: on|off\n", dropArg);
+    }
+    return;
+  } else if (strncasecmp(args, "debug", 5) == 0 && (args[5] == '\0' || args[5] == ' ')) {
+    // "musicmotor debug on|off|status" -- a word sub-argument, not a
+    // numeric value, so handled here rather than falling into the generic
+    // "<name> <number>" parser below.
+    const char *debugArg = args + 5;
+    while (*debugArg == ' ') debugArg++;
+    if (strcasecmp(debugArg, "on") == 0) {
+      musicMotorSetDebugLogging(true);
+    } else if (strcasecmp(debugArg, "off") == 0) {
+      musicMotorSetDebugLogging(false);
+    } else if (strcasecmp(debugArg, "status") == 0) {
+      musicMotorPrintDebugStatus();
+    } else {
+      Serial.printf("[CMD] Unknown 'musicmotor debug' subcommand '%s' -- try: on|off|status\n", debugArg);
+    }
+    return;
+  } else if (strncasecmp(args, "dynamics", 8) == 0 && (args[8] == '\0' || args[8] == ' ')) {
+    // "musicmotor dynamics status" -- Revision 10 config surface.
+    const char *dynArg = args + 8;
+    while (*dynArg == ' ') dynArg++;
+    if (strcasecmp(dynArg, "status") == 0) {
+      musicMotorPrintDynamicsStatus();
+    } else {
+      Serial.printf("[CMD] Unknown 'musicmotor dynamics' subcommand '%s' -- try: status\n", dynArg);
+    }
+    return;
+  } else if (strncasecmp(args, "quietmotion", 11) == 0 && (args[11] == '\0' || args[11] == ' ')) {
+    // "musicmotor quietmotion on|off" -- Revision 10 QUIET_BUILDUP toggle.
+    const char *qmArg = args + 11;
+    while (*qmArg == ' ') qmArg++;
+    if (strcasecmp(qmArg, "on") == 0) {
+      musicMotorSetQuietBuildupMotionEnabled(true);
+    } else if (strcasecmp(qmArg, "off") == 0) {
+      musicMotorSetQuietBuildupMotionEnabled(false);
+    } else {
+      Serial.printf("[CMD] Unknown 'musicmotor quietmotion' subcommand '%s' -- try: on|off\n", qmArg);
+    }
+    return;
+  }
+
+  // Remaining subcommands are "<name> <number>" -- split on the first space.
+  const char *space = strchr(args, ' ');
+  size_t nameLen = space ? (size_t)(space - args) : strlen(args);
+  const char *valueStr = space ? space + 1 : "";
+  while (*valueStr == ' ') valueStr++;
+
+  auto nameIs = [&](const char *name) { return strlen(name) == nameLen && strncasecmp(args, name, nameLen) == 0; };
+
+  if (nameIs("slow")) {
+    musicMotorSetSlowPercent((uint8_t)constrain((int)strtol(valueStr, nullptr, 10), 0, 100));
+  } else if (nameIs("fast")) {
+    musicMotorSetFastPercent((uint8_t)constrain((int)strtol(valueStr, nullptr, 10), 0, 100));
+  } else if (nameIs("hitthreshold")) {
+    musicMotorSetStrongHitThreshold((float)atof(valueStr));
+  } else if (nameIs("beatthreshold")) {
+    musicMotorSetBeatThreshold((float)atof(valueStr));
+  } else if (nameIs("accel")) {
+    musicMotorSetAccelMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("hold")) {
+    musicMotorSetHoldMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("decel")) {
+    musicMotorSetDecelMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("lowthreshold")) {
+    musicMotorSetLowThreshold((float)atof(valueStr));
+  } else if (nameIs("mediumthreshold")) {
+    musicMotorSetMediumThreshold((float)atof(valueStr));
+  } else if (nameIs("highthreshold")) {
+    musicMotorSetHighThreshold((float)atof(valueStr));
+  } else if (nameIs("peakthreshold") || nameIs("bandpeak")) {
+    // "bandpeak" is an alias for "peakthreshold" -- both update the exact
+    // same tunablePeakThreshold variable via the same setter (which also
+    // owns the low<medium<high<peak<=1.0 ordering validation), never a
+    // separate value. See MusicMotorController.cpp's musicMotorSetPeakThreshold().
+    musicMotorSetPeakThreshold((float)atof(valueStr));
+  } else if (nameIs("spintime")) {
+    musicMotorSetSpinTimeMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("spincooldown")) {
+    musicMotorSetSpinCooldownMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("rotationhold")) {
+    musicMotorSetMinRotationHoldMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("switchchance")) {
+    musicMotorSetSwitchChancePercent((uint8_t)constrain((int)strtol(valueStr, nullptr, 10), 0, 100));
+  } else if (nameIs("switchcooldown")) {
+    musicMotorSetSwitchCooldownMs((uint32_t)strtoul(valueStr, nullptr, 10));
+  } else if (nameIs("switchlimit")) {
+    musicMotorSetSwitchLimit((uint8_t)constrain((int)strtol(valueStr, nullptr, 10), 0, 255));
+  } else {
+    Serial.printf(
+        "[CMD] Unknown 'musicmotor' subcommand '%s' -- try: on|off|status|intensity|motion|summary|test|test stop|spin|"
+        "slow|fast|hitthreshold|beatthreshold|accel|hold|decel|lowthreshold|mediumthreshold|highthreshold|peakthreshold "
+        "(alias: bandpeak)|spintime|spincooldown|rotationhold|switchchance|switchcooldown|switchlimit|debug "
+        "on|off|status|dropdetect on|off|dynamics status|quietmotion on|off\n",
+        args);
+  }
+}
+
 static void dispatchCommand(const char *cmd) {
   size_t len = strlen(cmd);
   if (len == 1) {
@@ -606,6 +793,20 @@ static void dispatchCommand(const char *cmd) {
         }
         return;
       case 'v': printAudioVisualState(); return;
+      // Speaker diagnostic suite -- Enter-terminated word commands, not
+      // reserved immediate bytes in main.cpp's dispatcher (unlike an
+      // earlier revision of this feature): 't'/'s' being reserved-and-
+      // immediate meant the very first byte of any WORD command starting
+      // with 't'/'s' -- including the pre-existing "status" and this
+      // suite's own "sweep" -- was intercepted before a pending line
+      // existed to route it through instead, silently corrupting the rest
+      // of the word (e.g. "sweep" fired the 's' square-wave test, then
+      // dispatched the leftover "weep" as an unknown command). Moving
+      // both here removes the collision at its root; the only user-visible
+      // change is that 't'/'s' now need Enter, matching every other
+      // command in this suite.
+      case 't': startSpeakerTestTone(); return;
+      case 's': startSpeakerSquareWaveTest(); return;
       default: break;
     }
     Serial.printf("[CMD] Unknown command '%c' -- press 'h' for help\n", cmd[0]);
@@ -618,6 +819,68 @@ static void dispatchCommand(const char *cmd) {
   else if (strncasecmp(cmd, "motion", 6) == 0 && (cmd[6] == '\0' || cmd[6] == ' ')) dispatchMotionCommand(cmd + 6);
   else if (strncasecmp(cmd, "behavior", 8) == 0 && (cmd[8] == '\0' || cmd[8] == ' ')) dispatchBehaviorCommand(cmd + 8);
   else if (strncasecmp(cmd, "beh", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) dispatchBehaviorCommand(cmd + 3);
+  else if (strncasecmp(cmd, "musicmotor", 10) == 0 && (cmd[10] == '\0' || cmd[10] == ' '))
+    dispatchMusicMotorCommand(cmd + 10);
+  // Speaker diagnostic suite word commands (see include/SpeakerTest.h) --
+  // ordinary Enter-terminated word commands, matching "motion"/"behavior"
+  // ('t'/'s' are single-char but ALSO Enter-terminated -- see this file's
+  // own case 't'/case 's' labels above for why they moved out of
+  // main.cpp's immediate-byte dispatcher).
+  else if (strcasecmp(cmd, "low") == 0) startSpeakerLowTest();
+  else if (strcasecmp(cmd, "mid") == 0) startSpeakerMidTest();
+  else if (strcasecmp(cmd, "high") == 0) startSpeakerHighTest();
+  else if (strcasecmp(cmd, "sweep") == 0) startSpeakerSweepTest();
+  else if (strcasecmp(cmd, "melody") == 0) startSpeakerMelodyTest();
+  else if (strcasecmp(cmd, "beep") == 0) startSpeakerBeepTest();
+  else if (strcasecmp(cmd, "noise") == 0) startSpeakerNoiseTest();
+  else if (strcasecmp(cmd, "loud") == 0) startSpeakerLoudTest();
+  // Procedural music player -- see include/SpeakerTest.h. "stopmusic" is
+  // checked as its own full word (not a "music" prefix) so it doesn't
+  // collide with "music1".."music4".
+  else if (strcasecmp(cmd, "music1") == 0) startSpeakerMusic1();
+  else if (strcasecmp(cmd, "music2") == 0) startSpeakerMusic2();
+  else if (strcasecmp(cmd, "music3") == 0) startSpeakerMusic3();
+  else if (strcasecmp(cmd, "music4") == 0) startSpeakerMusic4();
+  else if (strcasecmp(cmd, "stopmusic") == 0) stopSpeakerMusic();
+  // Motor PWM calibration test -- see include/MotorPwmCalibration.h. Word
+  // commands, Enter-terminated like every other multi-char command here;
+  // 'm' itself stays the existing single-char mute toggle (see the len==1
+  // switch above) since these are only checked once len>1.
+  else if (strcasecmp(cmd, "mf") == 0) motorCalSelectDirection(MotorCalDirection::FORWARD);
+  else if (strcasecmp(cmd, "mr") == 0) motorCalSelectDirection(MotorCalDirection::REVERSE);
+  else if (strcasecmp(cmd, "mstop") == 0) {
+    motorCalStop();
+    cancelDanceEngine();  // 'mstop' is a universal "stop the motor now" -- also cancels DanceEngine and
+    cancelMusicMotorController();  // MusicMotorController if either happened to own the motor (silent/idempotent
+                                     // no-op if they didn't)
+  }
+  else if (strcasecmp(cmd, "mramp") == 0) motorCalStartRamp();
+  else if (strcasecmp(cmd, "mcycle") == 0) motorCalStartCycle();
+  else if (strcasecmp(cmd, "mkick") == 0) motorCalToggleKick();
+  else if (strcasecmp(cmd, "mstatus") == 0) motorCalPrintStatus();
+  // Dance Engine -- see include/DanceEngine.h. Word commands, Enter-terminated
+  // like every other multi-char command here.
+  else if (strcasecmp(cmd, "danceon") == 0) danceEngineEnable();
+  else if (strcasecmp(cmd, "danceoff") == 0) danceEngineDisable();
+  else if (strcasecmp(cmd, "dancestatus") == 0) danceEnginePrintStatus();
+  else if (strcasecmp(cmd, "dancetestoff") == 0) danceEngineStopTest();
+  else if (strcasecmp(cmd, "dancetest") == 0) danceEngineStartTest();
+  else if (strcasecmp(cmd, "dancequiet") == 0) danceEngineSimQuiet();
+  else if (strcasecmp(cmd, "dancemid") == 0) danceEngineSimMid();
+  else if (strcasecmp(cmd, "dancehigh") == 0) danceEngineSimHigh();
+  else if (strcasecmp(cmd, "dancepeak") == 0) danceEngineSimPeak();
+  else if ((cmd[0] == 'm' || cmd[0] == 'M') && len > 1 && isdigit((unsigned char)cmd[1])) {
+    bool allDigits = true;
+    for (size_t i = 1; i < len; i++) {
+      if (!isdigit((unsigned char)cmd[i])) { allDigits = false; break; }
+    }
+    long percent = allDigits ? strtol(cmd + 1, nullptr, 10) : -1;
+    if (allDigits && percent >= 1 && percent <= 100) {
+      motorCalManualSpeed((uint8_t)percent);
+    } else {
+      Serial.printf("[CMD] Motor speed must be 'm' + 1-100 (got '%s')\n", cmd);
+    }
+  }
   else Serial.printf("[CMD] Unknown command '%s' -- press 'h' for help\n", cmd);
 }
 

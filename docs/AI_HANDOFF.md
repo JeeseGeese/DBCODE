@@ -177,11 +177,14 @@ debugging on real hardware.
 
 **Known risks:**
 
-- The motor (DRV8833) and LED strip currently share the ESP32's 3.3V
-  rail with known, physically-observed contention — see that project's
+- The motor (DRV8833), LED strip, and (in development) the MAX98357A
+  amplifier currently share one 5V rail (corrected 2026-08-01 — this
+  bullet previously and incorrectly said the ESP32's 3.3V rail; only
+  the INMP441 microphone runs from 3.3V), with known,
+  physically-observed motor/LED contention — see that project's
   `AGENTS.md` for the electrical constraints. Any firmware change that
-  increases simultaneous motor+LED current draw should be treated as
-  physically risky until re-validated.
+  increases simultaneous motor+LED+amplifier current draw should be
+  treated as physically risky until re-validated.
 - No current-sensing or thermal-monitoring hardware exists on this
   project — over-current, stall, and thermal conditions cannot be
   detected in software, only avoided by conservative timing/duty limits.

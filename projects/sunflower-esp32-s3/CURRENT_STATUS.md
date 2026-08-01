@@ -176,9 +176,11 @@ each file's own header comment for its individual build/run command.
 MAX98357A output (volume, clarity, cleanliness) beyond the current
 write-path-only verification. This is the explicitly named next
 development objective as of the 2026-07-30 engineering checkpoint (commit
-`64e8aee`, tag `sunny-rev10.1-checkpoint`). No speaker hardware testing
-has occurred yet — see "Physically validated" and "Known limitations"
-below; this section will be updated once it does.
+`64e8aee`, tag `sunny-rev10.1-checkpoint`), prepared in detail on
+2026-07-31 in `docs/SPEAKER_BRINGUP_PLAN.md` (staged S0-S5 plan +
+validation checklist; no implementation started). No speaker hardware
+testing has occurred yet — see "Physically validated" and "Known
+limitations" below; this section will be updated once it does.
 
 Wider physical calibration/validation of the MusicMotorController
 Revision 10/10.1 drop-phrase vocabulary and speed-authority cap against a

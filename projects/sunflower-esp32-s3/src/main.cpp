@@ -153,7 +153,9 @@ void setup() {
   initMotorBehavior();
   initMotorPriorityMode();
   initMotorPwmCalibration();
-  initDanceEngine();
+#if ENABLE_LEGACY_DANCE_ENGINE
+  initDanceEngine();  // superseded by MusicMotorController -- see DanceEngine.h
+#endif
   initMusicMotorController();
   initExpressiveMotion();  // resets to ExpressiveMotionMode::OFF -- user must explicitly enable
   initBehaviorEngine();    // resets to BehaviorState::MANUAL -- user must explicitly select a state
@@ -174,9 +176,11 @@ void setup() {
   Serial.println(F("[MOTOR PWM TEST] Word commands: 'mf'/'mr' select direction, 'm20'..'m100' run at that %, "
                     "'mstop' coast+cancel, 'mramp'/'mcycle' automatic tests, 'mkick' toggle startup kick, "
                     "'mstatus' full status -- see README"));
+#if ENABLE_LEGACY_DANCE_ENGINE
   Serial.println(F("[DANCE ENGINE] Word commands: 'danceon'/'danceoff' enable/disable live mic-driven dancing "
                     "(80-100% active range), 'dancestatus' full status, 'dancetest'/'dancetestoff' deterministic "
                     "simulated sequence, 'dancequiet'/'dancemid'/'dancehigh'/'dancepeak' simulated overrides -- see README"));
+#endif
   Serial.println(F("[MUSIC MOTOR] Word commands: 'musicmotor on'/'musicmotor off' enable/disable music-reactive "
                     "dance-phrase movement (slow sway -> bass hit -> hip shake -> slowdown), 'musicmotor status' "
                     "full status, 'musicmotor slow/fast/hitthreshold/beatthreshold/accel/hold/decel <value>' "
@@ -949,6 +953,20 @@ bool isAnyMotorDiagnosticActive() {
          isDanceEngineActive() || isMusicMotorControllerActive();
 }
 
+// Implements ExpressiveMotion.h's forward-declared query -- see that
+// header's comment. Mirrors isAnyMotorDiagnosticActive()'s exact membership
+// and order; keep the two in sync if a new motor owner is ever added.
+const char *currentMotorOwnerName() {
+  if (priorityTestPhase != PriorityTestPhase::IDLE) return "MotorPriorityMode";
+  if (breakawayPhase != BreakawayPhase::IDLE) return "Breakaway test";
+  if (motorLedTestPhase != MotorLedTestPhase::IDLE) return "Motor+LED test";
+  if (isLedMapActive()) return "LED index map";
+  if (isMotorPwmCalibrationActive()) return "MotorPwmCalibration";
+  if (isDanceEngineActive()) return "DanceEngine";
+  if (isMusicMotorControllerActive()) return "MusicMotorController";
+  return nullptr;
+}
+
 // ============================================================================
 // Emergency-stop latch (see docs/DRV8833_MOTOR_BRINGUP.md, "command-5
 // emergency-stop investigation")
@@ -1233,8 +1251,11 @@ void loop() {
   // every other motor behavior/diagnostic is enforced at 'danceon' and by
   // isAnyMotorDiagnosticActive() above, so this never needs a pause gate
   // the way ExpressiveMotion does -- nothing else can become active while
-  // DanceEngine owns the motor.
+  // DanceEngine owns the motor. Superseded by MusicMotorController --
+  // compiled out entirely unless ENABLE_LEGACY_DANCE_ENGINE is set.
+#if ENABLE_LEGACY_DANCE_ENGINE
   updateDanceEngine(now);
+#endif
   // Same reasoning as updateDanceEngine() above -- reads AudioAnalyzer
   // directly, mutual exclusion enforced at 'musicmotor on' and by
   // isAnyMotorDiagnosticActive(), no pause gate needed.

@@ -41,6 +41,19 @@ static const CuePhase MOTOR_OFF_PHASES[] = {
     {false, 120, "OFF"},
 };
 
+// AUDIO_MODE_BLOCKED: three quick white flashes -- distinct in both count
+// and color from every ON/OFF confirmation cue above, so a rejected Audio
+// Mode activation can never be mistaken for a successful one.
+static const CuePhase BLOCKED_PHASES[] = {
+    {false, 60, "OFF"},
+    {true, 110, "WHITE"},
+    {false, 90, "OFF"},
+    {true, 110, "WHITE"},
+    {false, 90, "OFF"},
+    {true, 110, "WHITE"},
+    {false, 120, "OFF"},
+};
+
 // Fully saturated -- physical testing showed the previous desaturated
 // tones ({40,200,90} / {210,45,35}) read as dim/muddy rather than clearly
 // green/red, especially at the (then-lower) brightness cap.
@@ -48,6 +61,7 @@ static const RGB8 ENABLED_COLOR = {0, 255, 0};  // pure green
 static const RGB8 DISABLED_COLOR = {255, 0, 0}; // pure red
 static const RGB8 MOTOR_ON_COLOR = {128, 0, 255};  // clear purple
 static const RGB8 MOTOR_OFF_COLOR = {255, 160, 0}; // clear warm gold
+static const RGB8 BLOCKED_COLOR = {255, 255, 255}; // pure white
 
 struct VisualCueState {
   VisualCueType type = VisualCueType::NONE;
@@ -71,6 +85,9 @@ static const CuePhase *phasesFor(VisualCueType type, uint8_t &count) {
     case VisualCueType::MOTOR_AUDIO_REACTIVE_OFF:
       count = sizeof(MOTOR_OFF_PHASES) / sizeof(MOTOR_OFF_PHASES[0]);
       return MOTOR_OFF_PHASES;
+    case VisualCueType::AUDIO_MODE_BLOCKED:
+      count = sizeof(BLOCKED_PHASES) / sizeof(BLOCKED_PHASES[0]);
+      return BLOCKED_PHASES;
     case VisualCueType::NONE:
       break;
   }
@@ -84,6 +101,7 @@ static const char *cueTypeName(VisualCueType type) {
     case VisualCueType::OVERLAY_DISABLED: return "AUDIO_DISABLED";
     case VisualCueType::MOTOR_AUDIO_REACTIVE_ON: return "MOTOR_AUDIO_REACTIVE_ON";
     case VisualCueType::MOTOR_AUDIO_REACTIVE_OFF: return "MOTOR_AUDIO_REACTIVE_OFF";
+    case VisualCueType::AUDIO_MODE_BLOCKED: return "AUDIO_MODE_BLOCKED";
     case VisualCueType::NONE: break;
   }
   return "NONE";
@@ -95,6 +113,7 @@ static RGB8 colorFor(VisualCueType type) {
     case VisualCueType::OVERLAY_DISABLED: return DISABLED_COLOR;
     case VisualCueType::MOTOR_AUDIO_REACTIVE_ON: return MOTOR_ON_COLOR;
     case VisualCueType::MOTOR_AUDIO_REACTIVE_OFF: return MOTOR_OFF_COLOR;
+    case VisualCueType::AUDIO_MODE_BLOCKED: return BLOCKED_COLOR;
     case VisualCueType::NONE: break;
   }
   return RGB8{0, 0, 0};

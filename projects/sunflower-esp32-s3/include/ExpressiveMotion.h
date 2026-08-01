@@ -79,6 +79,15 @@ enum class AudioActivityBand {
 // themselves.
 bool isAnyMotorDiagnosticActive();
 
+// Implemented in main.cpp, right beside isAnyMotorDiagnosticActive() above
+// -- mirrors its exact membership so the two never drift apart. Returns the
+// display name of whichever motor-owning diagnostic/behavior is currently
+// blocking a new activation (e.g. "MotorPwmCalibration"), or nullptr if
+// isAnyMotorDiagnosticActive() would return false. Used by Controls.cpp's
+// setUserAudioModeEnabled() to report which owner blocked an Audio Mode
+// enable request.
+const char *currentMotorOwnerName();
+
 void initExpressiveMotion();
 
 // Must be called every loop() iteration (main.cpp gates this: skipped,

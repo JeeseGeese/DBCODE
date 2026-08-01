@@ -32,6 +32,20 @@
 
 #include <stdint.h>
 
+// Superseded as of the Sunny Rev 10.1 architecture: MusicMotorController
+// (see MusicMotorController.h) is now Sunny's sole production music-driven
+// dancing engine. DanceEngine is retained ONLY for historical reference and
+// rollback safety during the MusicMotorController physical-button
+// integration's validation window -- see CURRENT_STATUS.md's "DanceEngine
+// removal checklist." Leave at 0 for every normal build: initDanceEngine()/
+// updateDanceEngine() are never called (see main.cpp), the dance*/danceon/
+// danceoff serial commands and their help-text entry are unavailable (see
+// Controls.cpp), and every function below becomes a cheap no-op/false stub
+// (see DanceEngine.cpp) -- no initialization, no per-loop work, no motor-
+// ownership claim. Flip to 1 only to temporarily bring the legacy engine
+// back as a manual serial-only diagnostic for comparison/rollback.
+#define ENABLE_LEGACY_DANCE_ENGINE 0
+
 enum class DanceState {
   OFF,
   RESTING,

@@ -46,6 +46,41 @@ BaseEffect getCurrentBaseEffect();
 AudioOverlay getCurrentAudioOverlay();
 AudioOverlay getSelectedOverlayMode();
 bool isAudioOverlayEnabled();
+
+// Unified "Audio Mode" -- the one user-facing state Button4's long-hold
+// gesture (and the 'audiomode on/off' serial command) controls. ON means
+// BOTH the LED audio-reactive overlay AND MusicMotorController are active
+// together; OFF means both are inactive and the motor is safely stopped.
+// DanceEngine is never part of this state (see DanceEngine.h -- disabled
+// by default, superseded by MusicMotorController).
+//
+// isUserAudioModeEnabled() is a derived read, not a separately-stored
+// flag -- it can never drift from the two real states it reports on
+// (isAudioOverlayEnabled() && isMusicMotorControllerActive()). It returns
+// false for every "half enabled" state (e.g. MusicMotorController started
+// standalone via 'musicmotor on' with the overlay still off) -- callers
+// that need to distinguish a partial state from full Audio Mode should
+// check isAudioOverlayEnabled()/isMusicMotorControllerActive() directly
+// (see 'status' output).
+bool isUserAudioModeEnabled();
+
+// setUserAudioModeEnabled(true): enables the LED overlay and
+// MusicMotorController together, atomically from the caller's point of
+// view -- if motor ownership can't be secured, neither half is left
+// enabled (see Controls.cpp for the exact rejection path and
+// AUDIO_MODE_BLOCKED cue). No-op/success if Audio Mode is already fully
+// ON. Idempotent-safe to call even if MusicMotorController was already
+// running standalone (completes the LED half rather than refusing).
+//
+// setUserAudioModeEnabled(false): always succeeds -- disables the overlay,
+// safely stops/resets MusicMotorController (musicMotorDisable()), and
+// leaves DanceEngine untouched (already disabled by default). Matches the
+// emergency-stop philosophy that disabling/stopping is never refused.
+//
+// Returns true if Audio Mode ends the call ON (enable) or OFF (disable);
+// false only for a rejected enable request.
+bool setUserAudioModeEnabled(bool enabled);
+
 bool isMuted();
 
 // Exported setter for MotorPowerGuard (see include/MotorPowerGuard.h) --

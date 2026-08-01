@@ -201,24 +201,100 @@ static void advanceModeAndOverlay() {
   advanceOverlayMode();
 }
 
-// Trigger point for the visual cue and the ON/OFF toggle itself --
-// Button4's press edge and serial 'x'. Never changes which overlay mode
-// is selected, only whether it's currently active. The cue is armed and
-// the confirmation printed unconditionally, even while muted; only the
-// actual LED rendering is suppressed while muted, in main.cpp.
-static void toggleOverlayOffOn() {
-  unsigned long now = millis();
-  audioOverlayEnabled = !audioOverlayEnabled;
+// Sets audioOverlayEnabled to an explicit target state and prints the
+// "[AUDIO] Overlay: ON/OFF" line -- shared by toggleOverlayOffOn() (Button4
+// short press / serial 'x') and setUserAudioModeEnabled() (Button4 long
+// hold / unified Audio Mode) below. Idempotent no-op if already at the
+// target. Deliberately does NOT fire a visual cue -- a bare LED-overlay
+// toggle and a full Audio Mode transition use different cues, so each
+// caller fires its own.
+static void setAudioOverlayEnabledInternal(bool enabled, unsigned long now) {
+  if (audioOverlayEnabled == enabled) return;
+  audioOverlayEnabled = enabled;
   if (audioOverlayEnabled) {
     resetAudioOverlayState(selectedOverlayMode, now);
     Serial.println(F("[AUDIO] Overlay: ON"));
+  } else {
+    Serial.println(F("[AUDIO] Overlay: OFF"));
+  }
+}
+
+// Trigger point for the visual cue and the ON/OFF toggle itself --
+// Button4's short-press release edge and serial 'x'. Never changes which
+// overlay mode is selected, only whether it's currently active. The cue is
+// armed and the confirmation printed unconditionally, even while muted;
+// only the actual LED rendering is suppressed while muted, in main.cpp.
+static void toggleOverlayOffOn() {
+  unsigned long now = millis();
+  setAudioOverlayEnabledInternal(!audioOverlayEnabled, now);
+  if (audioOverlayEnabled) {
     startVisualCue(VisualCueType::OVERLAY_ENABLED, now);
     Serial.println(F("[CUE] Audio overlay enabled (green flash)"));
   } else {
-    Serial.println(F("[AUDIO] Overlay: OFF"));
     startVisualCue(VisualCueType::OVERLAY_DISABLED, now);
     Serial.println(F("[CUE] Audio overlay disabled (double red flash)"));
   }
+}
+
+// Unified Audio Mode -- see Controls.h for the full contract. Derived
+// read, never stored separately, so it can't drift from the two states it
+// reports on.
+bool isUserAudioModeEnabled() {
+  return audioOverlayEnabled && isMusicMotorControllerActive();
+}
+
+// The ONLY coordinated enable/disable path for Audio Mode -- Button4's
+// long-hold handler and the 'audiomode on/off' serial command both funnel
+// through this. See Controls.h for the full contract (rejection semantics,
+// idempotence, return value).
+bool setUserAudioModeEnabled(bool enabled) {
+  unsigned long now = millis();
+
+  if (!enabled) {
+    // Disabling is always allowed, matching emergency-stop's own "always
+    // permitted to stop" philosophy -- never refused, even if only one
+    // half was actually on. musicMotorDisable() is MusicMotorController's
+    // own safe-shutdown entry point (see MusicMotorController.cpp's
+    // hardStop()/resetRuntimeState()) -- this function does not duplicate
+    // any of that internal cleanup.
+    setAudioOverlayEnabledInternal(false, now);
+    musicMotorDisable();
+    startVisualCue(VisualCueType::OVERLAY_DISABLED, now);
+    Serial.println(F("[AUDIO MODE] OFF | LED overlay=OFF | MusicMotor=OFF | Motor=STOPPED"));
+    return true;
+  }
+
+  if (isUserAudioModeEnabled()) {
+    Serial.println(F("[AUDIO MODE] Already ON"));
+    return true;
+  }
+
+  // Motor ownership must be secured before touching the LED half -- do not
+  // silently enable the LED overlay while the motor half fails. Note:
+  // MusicMotorController already being active (e.g. a prior standalone
+  // 'musicmotor on' with the overlay still off) is a partial state this
+  // call can complete, not a conflict to reject -- isAnyMotorDiagnosticActive()
+  // would otherwise report true for MusicMotorController's own presence.
+  if (isAnyMotorDiagnosticActive() && !isMusicMotorControllerActive()) {
+    const char *owner = currentMotorOwnerName();
+    Serial.printf("[AUDIO MODE] Enable rejected: motor owned by %s\n", owner ? owner : "another diagnostic");
+    startVisualCue(VisualCueType::AUDIO_MODE_BLOCKED, now);
+    return false;
+  }
+
+  musicMotorEnable();  // idempotent -- "[MUSIC MOTOR] Already enabled" no-op if already on
+  if (!isMusicMotorControllerActive()) {
+    // musicMotorEnable() refused internally (e.g. isExpressiveMotionMoving())
+    // despite the ownership check above -- report and leave both halves off.
+    Serial.println(F("[AUDIO MODE] Enable rejected: MusicMotorController failed to start"));
+    startVisualCue(VisualCueType::AUDIO_MODE_BLOCKED, now);
+    return false;
+  }
+
+  setAudioOverlayEnabledInternal(true, now);
+  startVisualCue(VisualCueType::OVERLAY_ENABLED, now);
+  Serial.println(F("[AUDIO MODE] ON | LED overlay=ON | MusicMotor=ON"));
+  return true;
 }
 
 // Any command that gives the user direct control of expressive movement
@@ -281,48 +357,21 @@ static void handleBrightnessButton() {
   if (buttonPressedEdge(brightnessButton)) brightnessUp();
 }
 
-// Button4 long-press action: toggles expressive audio-reactive motor
-// movement only -- never touches the LED audio overlay (audioOverlayEnabled/
-// selectedOverlayMode are untouched by this function). Uses only
-// ExpressiveMotion's public API (never MotorDriver/GPIO directly), so
-// emergency stop, diagnostic mutual exclusion, MotorPowerGuard, and the
-// max-energized safeguard are all already enforced by the same code path
-// every other caller of setExpressiveMotionMode() goes through.
+// Button4 long-press action: toggles the unified Audio Mode (LED
+// audio-reactive overlay + MusicMotorController together -- see
+// setUserAudioModeEnabled() above). This is the ONLY physical-button path
+// to music-driven motor dancing; normal users never need the serial
+// monitor to start it.
+//
+// Formerly toggled ExpressiveMotion's AUDIO_REACTIVE mode instead (gentle
+// idle-style audio-reactive pulses, a different and still-fully-present
+// system -- see ExpressiveMotion.h). That mode has simply lost its
+// physical-button binding now that MusicMotorController Revision 10.1 is
+// Sunny's production music-driven dancing engine; it remains reachable via
+// the 'motion audio' serial command for development/comparison.
 static void handleButton4LongPress(unsigned long now) {
-  if (getExpressiveMotionMode() == ExpressiveMotionMode::AUDIO_REACTIVE) {
-    // Turning off is always safe to allow -- matches emergency-stop's own
-    // "always permitted to stop" philosophy. setExpressiveMotionMode(OFF)
-    // stops any in-flight pulse immediately (motorStop() +
-    // releaseMotorPowerImmediately()) and restores MotorLedPowerMode to
-    // FULL_MUTE -- see ExpressiveMotion.cpp's forceReleaseOrdinaryMovement().
-    takeManualMotionControl();
-    setExpressiveMotionMode(ExpressiveMotionMode::OFF);
-    startVisualCue(VisualCueType::MOTOR_AUDIO_REACTIVE_OFF, now);
-    Serial.println(F("[BUTTON 4] Audio-reactive motor movement OFF"));
-    return;
-  }
-
-  // Turning on is refused while a motor/LED diagnostic (2/3/5/6) is
-  // active -- stricter than the 'motion audio' serial command (which
-  // accepts the mode change and simply defers actual movement until the
-  // diagnostic ends, via main.cpp's pauseExpressiveMotion()). No purple
-  // cue and no mode change here: "do not make purple flash unless
-  // AUDIO_REACTIVE was actually enabled successfully."
-  if (isAnyMotorDiagnosticActive()) {
-    Serial.println(F("[BUTTON 4] Audio-reactive motor movement refused -- a motor diagnostic is active"));
-    return;
-  }
-
-  // Covers both OFF->AUDIO_REACTIVE and IDLE_ALIVE->AUDIO_REACTIVE in one
-  // path: setExpressiveMotionMode() already switches directly between the
-  // two non-OFF modes without passing through an uncontrolled state (the
-  // underlying pulse state machine is shared and safety-checked
-  // regardless of which mode requested it; only the *next* idle-timer
-  // decision changes behavior) and re-rolls fresh idle timing.
-  takeManualMotionControl();
-  setExpressiveMotionMode(ExpressiveMotionMode::AUDIO_REACTIVE);
-  startVisualCue(VisualCueType::MOTOR_AUDIO_REACTIVE_ON, now);
-  Serial.println(F("[BUTTON 4] Audio-reactive motor movement ON"));
+  (void)now;  // setUserAudioModeEnabled() times its own cue internally
+  setUserAudioModeEnabled(!isUserAudioModeEnabled());
 }
 
 // Button4 is dual-purpose (see the state variables' comment above): a
@@ -434,10 +483,14 @@ static void printHelp() {
   Serial.println(F("  m20|m30|...|m100 (any m1-m100) = run selected direction continuously at that % duty"));
   Serial.println(F("  mramp = automatic PWM ramp test      mcycle = automatic dance-style speed/direction test"));
   Serial.println(F("  mkick = toggle startup kick on/off   mstatus = full motor PWM-test status (dev branch, see README)"));
+#if ENABLE_LEGACY_DANCE_ENGINE
   Serial.println(F("  danceon/danceoff = enable/disable live mic-driven Dance Engine (80-100% validated active range)"));
   Serial.println(F("  dancestatus = full dance status      dancetest/dancetestoff = deterministic simulated sequence"));
   Serial.println(F("  dancequiet|dancemid|dancehigh|dancepeak = temporarily simulate that energy band (dev branch, see README)"));
-  Serial.println(F("  musicmotor on/off = enable/disable music-reactive movement (intensity sway -> bass accent"));
+#endif
+  Serial.println(F("  audiomode on/off/status = unified Audio Mode (LED overlay + MusicMotor together) -- same as"));
+  Serial.println(F("           Button4 long-hold; normal users use the button, this is a dev/test convenience"));
+  Serial.println(F("  musicmotor on/off = enable/disable music-reactive movement ALONE (intensity sway -> bass accent"));
   Serial.println(F("           -> hip shake/extended spin -> decel)   musicmotor status = full status"));
   Serial.println(F("  musicmotor intensity = energy/band/threshold snapshot   musicmotor spin = manual test spin"));
   Serial.println(F("  musicmotor motion = physical calibration/tuning surface (floor, ranges, drop-hold, hip-shake, spin)"));
@@ -504,6 +557,19 @@ void printStatus() {
   Serial.printf("  frameIntervalMs=%d measuredFps=%.1f\n", FRAME_INTERVAL_MS, g_measuredFps);
   Serial.printf("  Selected audio-overlay mode: %s\n", AUDIO_OVERLAY_NAMES[(uint8_t)selectedOverlayMode]);
   Serial.printf("  Audio overlay enabled: %s\n", audioOverlayEnabled ? "YES" : "NO");
+  {
+    // Unified Audio Mode -- derived, never stored separately (see
+    // isUserAudioModeEnabled()). PARTIAL means exactly one half is on,
+    // which only happens after independently toggling the LED overlay
+    // ('x') or MusicMotorController ('musicmotor on/off') via serial --
+    // Button4 long-hold and 'audiomode on/off' always drive both together.
+    bool motorOn = isMusicMotorControllerActive();
+    const char *audioModeState = (audioOverlayEnabled && motorOn)   ? "ON"
+                                  : (!audioOverlayEnabled && !motorOn) ? "OFF"
+                                                                        : "PARTIAL";
+    Serial.printf("  Audio Mode (unified): %s | LED overlay=%s MusicMotor=%s\n", audioModeState,
+                  audioOverlayEnabled ? "ON" : "OFF", motorOn ? "ON" : "OFF");
+  }
   Serial.printf("  Current audio energy=%.3f Current bass control=%.3f Current transient control=%.3f\n", v.level,
                 v.bass, v.highRange);
   Serial.printf("  Active ripple count=%u Active particle/comet count=%u\n", getActiveRippleCount(),
@@ -607,6 +673,31 @@ static void dispatchBehaviorCommand(const char *args) {
   } else {
     printBehaviorHelp();
     Serial.printf("[CMD] Unknown 'behavior' subcommand '%s'\n", args);
+  }
+}
+
+// "audiomode" word command -- the serial-facing equivalent of Button4's
+// long-hold gesture (see setUserAudioModeEnabled() above). A development/
+// testing convenience only; normal users operate Audio Mode via the
+// physical button and never need this. "audiomode status" (or bare
+// "audiomode") reports ON/OFF/PARTIAL the same way 'status' does, so a
+// partial state left over from independent 'x' / 'musicmotor on|off' use
+// is never mistaken for full Audio Mode.
+static void dispatchAudioModeCommand(const char *args) {
+  while (*args == ' ') args++;
+  if (strcasecmp(args, "on") == 0) {
+    setUserAudioModeEnabled(true);
+  } else if (strcasecmp(args, "off") == 0) {
+    setUserAudioModeEnabled(false);
+  } else if (strcasecmp(args, "status") == 0 || *args == '\0') {
+    bool motorOn = isMusicMotorControllerActive();
+    const char *state = (audioOverlayEnabled && motorOn)      ? "ON"
+                         : (!audioOverlayEnabled && !motorOn)  ? "OFF"
+                                                                : "PARTIAL";
+    Serial.printf("[AUDIO MODE] %s | LED overlay=%s MusicMotor=%s\n", state, audioOverlayEnabled ? "ON" : "OFF",
+                  motorOn ? "ON" : "OFF");
+  } else {
+    Serial.printf("[CMD] Unknown 'audiomode' subcommand '%s' -- try: on|off|status\n", args);
   }
 }
 
@@ -821,6 +912,8 @@ static void dispatchCommand(const char *cmd) {
   else if (strncasecmp(cmd, "beh", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) dispatchBehaviorCommand(cmd + 3);
   else if (strncasecmp(cmd, "musicmotor", 10) == 0 && (cmd[10] == '\0' || cmd[10] == ' '))
     dispatchMusicMotorCommand(cmd + 10);
+  else if (strncasecmp(cmd, "audiomode", 9) == 0 && (cmd[9] == '\0' || cmd[9] == ' '))
+    dispatchAudioModeCommand(cmd + 9);
   // Speaker diagnostic suite word commands (see include/SpeakerTest.h) --
   // ordinary Enter-terminated word commands, matching "motion"/"behavior"
   // ('t'/'s' are single-char but ALSO Enter-terminated -- see this file's
@@ -858,8 +951,11 @@ static void dispatchCommand(const char *cmd) {
   else if (strcasecmp(cmd, "mcycle") == 0) motorCalStartCycle();
   else if (strcasecmp(cmd, "mkick") == 0) motorCalToggleKick();
   else if (strcasecmp(cmd, "mstatus") == 0) motorCalPrintStatus();
-  // Dance Engine -- see include/DanceEngine.h. Word commands, Enter-terminated
-  // like every other multi-char command here.
+  // Dance Engine -- see include/DanceEngine.h. Superseded by
+  // MusicMotorController; these commands only exist in a build with
+  // ENABLE_LEGACY_DANCE_ENGINE set (see DanceEngine.h). Word commands,
+  // Enter-terminated like every other multi-char command here.
+#if ENABLE_LEGACY_DANCE_ENGINE
   else if (strcasecmp(cmd, "danceon") == 0) danceEngineEnable();
   else if (strcasecmp(cmd, "danceoff") == 0) danceEngineDisable();
   else if (strcasecmp(cmd, "dancestatus") == 0) danceEnginePrintStatus();
@@ -869,6 +965,7 @@ static void dispatchCommand(const char *cmd) {
   else if (strcasecmp(cmd, "dancemid") == 0) danceEngineSimMid();
   else if (strcasecmp(cmd, "dancehigh") == 0) danceEngineSimHigh();
   else if (strcasecmp(cmd, "dancepeak") == 0) danceEngineSimPeak();
+#endif
   else if ((cmd[0] == 'm' || cmd[0] == 'M') && len > 1 && isdigit((unsigned char)cmd[1])) {
     bool allDigits = true;
     for (size_t i = 1; i < len; i++) {
@@ -934,7 +1031,7 @@ void initControls() {
   Serial.println(F("[BUTTON] GPIO10 using INPUT_PULLUP (Mode: press=next LED mode + next overlay mode, double-press=previous LED mode)"));
   Serial.println(F("[BUTTON] GPIO11 using INPUT_PULLUP (Mute: toggles LED output off/on)"));
   Serial.println(F("[BUTTON] GPIO17 using INPUT_PULLUP (Brightness: press=next level)"));
-  Serial.println(F("[BUTTON] GPIO5 using INPUT_PULLUP (Button4: short press=toggle LED audio overlay ON/OFF, long press=toggle expressive audio-reactive motor movement)"));
+  Serial.println(F("[BUTTON] GPIO5 using INPUT_PULLUP (Button4: short press=toggle LED audio overlay ON/OFF, long press=toggle unified Audio Mode -- LED overlay + MusicMotorController)"));
 
   setBaseEffect(currentBaseEffect);
   resetAudioOverlayState(selectedOverlayMode, millis());

@@ -1,5 +1,12 @@
 #include "DanceEngine.h"
 
+// See include/DanceEngine.h's ENABLE_LEGACY_DANCE_ENGINE comment. When 0
+// (the default), this entire legacy implementation is compiled out and
+// replaced by the no-op/false stubs in the #else branch at the bottom of
+// this file -- DanceEngine adds no code size, no init work, and no per-loop
+// work to a normal production build.
+#if ENABLE_LEGACY_DANCE_ENGINE
+
 #include <Arduino.h>
 #include <math.h>
 
@@ -597,3 +604,28 @@ void danceEnginePrintStatus() {
     Serial.printf("  GPIO8 (IN1): LOW   GPIO9 (IN2): PWM duty=%u/255\n", percentToDuty(currentDutyPercent));
   }
 }
+
+#else  // !ENABLE_LEGACY_DANCE_ENGINE
+
+// Legacy engine compiled out (see include/DanceEngine.h). Every function
+// below is a cheap no-op/false stub -- no state, no motor ownership, no
+// Serial output -- so every existing call site (main.cpp, Controls.cpp,
+// isAnyMotorDiagnosticActive()) still links and behaves as "DanceEngine is
+// not running" without needing to be individually gated.
+#include <Arduino.h>
+
+void initDanceEngine() {}
+void updateDanceEngine(unsigned long) {}
+bool isDanceEngineActive() { return false; }
+void danceEngineEnable() { Serial.println(F("[DANCE] Legacy DanceEngine is disabled in this build (superseded by MusicMotorController)")); }
+void danceEngineDisable() {}
+void danceEnginePrintStatus() { Serial.println(F("[DANCE] Legacy DanceEngine is disabled in this build (superseded by MusicMotorController)")); }
+void danceEngineStartTest() { danceEngineEnable(); }
+void danceEngineStopTest() {}
+void danceEngineSimQuiet() { danceEngineEnable(); }
+void danceEngineSimMid() { danceEngineEnable(); }
+void danceEngineSimHigh() { danceEngineEnable(); }
+void danceEngineSimPeak() { danceEngineEnable(); }
+void cancelDanceEngine() {}
+
+#endif  // ENABLE_LEGACY_DANCE_ENGINE

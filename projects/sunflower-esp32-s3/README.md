@@ -44,7 +44,7 @@ the "Expressive motion" section below for a summary.
 | Mode button | 10 | `INPUT_PULLUP`, wired to GND — press: next base effect + next audio-overlay mode, double-press: previous base effect only |
 | Mute button | 11 | `INPUT_PULLUP`, wired to GND — toggles LED output off/on |
 | Brightness button | 17 | `INPUT_PULLUP`, wired to GND — cycles the 9-level brightness table |
-| Button 4 | 5 | `INPUT_PULLUP`, wired to GND — press: toggle audio overlay ON/OFF immediately (debounced press edge, no hold/click-count logic) |
+| Button 4 | 5 | `INPUT_PULLUP`, wired to GND — short press: toggle audio overlay ON/OFF; long hold (900ms): toggle unified Audio Mode (LED overlay + MusicMotorController) — see [Button controls](#button-controls) below |
 | INMP441 SCK/BCLK | 6 | I2S bit clock, driven by the ESP32 (I2S master) |
 | INMP441 WS/LRCLK | 7 | I2S word select, driven by the ESP32 (I2S master) |
 | INMP441 SD/DATA | 15 | I2S data input to the ESP32 |
@@ -455,7 +455,75 @@ detaches the LEDC channels and returns both pins to plain digital LOW).
   microphone configuration, LEDs, buttons, or any GPIO assignment other than
   the existing GPIO8/GPIO9 motor pins.
 
-### Dance Engine V1 (development branch)
+### Audio Mode (unified)
+
+**The normal, production, physical-button path to music-driven dancing.**
+As of the Sunny Rev 10.1 architecture, `MusicMotorController` (see
+[MusicMotorController](#musicmotorcontroller-development-branch) below) is
+Sunny's sole production music-driven dancing engine; `DanceEngine` (below)
+is superseded and disabled by default. Audio Mode is the one user-facing
+state that coordinates both halves of "make Sunny dance to music":
+
+```
+Audio Mode OFF: LED audio overlay OFF, MusicMotorController OFF, motor STOPPED
+Audio Mode ON:  LED audio overlay ON,  MusicMotorController ON
+```
+
+`DanceEngine` is never part of this state -- it stays disabled regardless
+(`ENABLE_LEGACY_DANCE_ENGINE=0`, see below).
+
+- **Button 4 long hold (900ms+)** is the only physical-button path;
+  normal users never need the serial monitor to start Sunny dancing to
+  music. See [Button controls](#button-controls) below for the exact
+  press/hold/release mechanics.
+- **On (successful):** enables the LED overlay and `MusicMotorController`
+  together, one green confirmation flash, prints
+  `[AUDIO MODE] ON | LED overlay=ON | MusicMotor=ON`.
+- **Off:** always succeeds -- disables the LED overlay, safely
+  stops/resets `MusicMotorController` (`musicMotorDisable()` -> its own
+  `hardStop()`/`resetRuntimeState()`, same safe-shutdown path the
+  `musicmotor off` serial command already used), two red confirmation
+  flashes, prints
+  `[AUDIO MODE] OFF | LED overlay=OFF | MusicMotor=OFF | Motor=STOPPED`.
+- **Motor ownership conflicts:** if another motor diagnostic
+  (`MotorPwmCalibration`, the priority/breakaway/motor+LED tests, the LED
+  index mapper) currently owns the motor, an enable request is rejected --
+  neither half is enabled (no silently-half-on state), three quick white
+  flashes, e.g. `[AUDIO MODE] Enable rejected: motor owned by
+  MotorPwmCalibration`. `MusicMotorController` already being active on its
+  own (e.g. a prior standalone `musicmotor on`) is not treated as a
+  conflict -- the enable call simply completes the LED-overlay half.
+- **Serial equivalent (dev/test only):** `audiomode on` / `audiomode off`
+  / `audiomode status` -- exactly the same coordinated path Button 4 uses.
+  Normal users should never need this; it exists for testing without
+  physical hardware.
+- **Status reporting:** both `status` and `audiomode status` report
+  `Audio Mode (unified): ON | OFF | PARTIAL`. `PARTIAL` means exactly one
+  half is on -- this only happens after independently toggling the LED
+  overlay (`x`) or `MusicMotorController` (`musicmotor on`/`off`) directly
+  over serial; Button 4 and `audiomode on`/`off` always drive both halves
+  together and can never leave a partial state on their own. The standalone
+  `musicmotor`/`x` serial commands remain available for
+  development/testing and are documented as creating partial states, not
+  removed.
+
+### Dance Engine V1 (superseded -- disabled by default)
+
+**Superseded by `MusicMotorController` Revision 10.1** (see
+[Audio Mode (unified)](#audio-mode-unified) above and
+[MusicMotorController](#musicmotorcontroller-development-branch) below).
+Disabled by default as of this task: gated behind
+`ENABLE_LEGACY_DANCE_ENGINE` in `include/DanceEngine.h`, currently `0`. When
+`0` (every normal build), `initDanceEngine()`/`updateDanceEngine()` are
+never called, the `danceon`/`danceoff`/`dancestatus`/`dancetest*`/
+`dance{quiet,mid,high,peak}` serial commands and their help-text entry are
+unavailable, and every `DanceEngine` function becomes a cheap no-op/false
+stub -- no initialization, no per-loop work, no motor-ownership claim.
+Retained only for historical reference and rollback safety during the
+Audio Mode physical-button integration's validation window -- see
+`CURRENT_STATUS.md`'s "DanceEngine removal checklist" for what has to be
+true before this file is deleted outright. The description below documents
+the legacy engine as it exists when `ENABLE_LEGACY_DANCE_ENGINE=1`.
 
 **Live microphone-driven PWM dancing** (`include/DanceEngine.h` /
 `src/DanceEngine.cpp`), built as a dedicated choreography layer on top of
@@ -1516,7 +1584,14 @@ architecture and every pattern's exact step sequence.
   never frozen or replaced.
 - **`AUDIO_REACTIVE` vs. `DanceEngine`:** these are two independent
   audio-to-motor implementations and are never allowed to drive the motor
-  at the same time — see [Dance Engine V1](#dance-engine-v1-development-branch).
+  at the same time — see
+  [Dance Engine V1](#dance-engine-v1-superseded----disabled-by-default)
+  (disabled by default; this mutual-exclusion logic only matters in a
+  build with `ENABLE_LEGACY_DANCE_ENGINE=1`). Note: Button 4's long-hold
+  gesture no longer drives `AUDIO_REACTIVE` — it drives the unified
+  [Audio Mode](#audio-mode-unified) instead (LED overlay +
+  `MusicMotorController`). `AUDIO_REACTIVE` remains fully available via
+  `motion audio`, just without a physical-button binding.
   `danceon` turns `AUDIO_REACTIVE` off first if it was selected, and
   `isAnyMotorDiagnosticActive()` (which `AUDIO_REACTIVE`'s own pattern
   selection already checks before starting a movement) reports true the
@@ -2011,18 +2086,27 @@ to PULSE.
   muted. Prints `[MUTE] ON` / `[MUTE] OFF`.
 - **Brightness (GPIO17):** press = next level in the 9-step table below.
   Prints `[BRIGHTNESS] <pct>% | raw=<0-255>`.
-- **Button 4 (GPIO5):** a dedicated, immediate ON/OFF button for the
-  audio overlay -- no click-count, double-click, or hold detection of any
-  kind (an earlier click-gesture state machine was removed entirely).
-  The toggle fires on the debounced **press edge itself**, not on
-  release, so a sustained hold produces exactly one toggle (the edge only
-  fires once, on HIGH→LOW) and releasing does nothing beyond ordinary
-  debounce bookkeeping. Prints `[BUTTON4] Audio overlay toggle`, then
-  `[AUDIO] Overlay: ON` or `OFF`, then the matching `[CUE]` lines (green
-  single-flash on enable, double red-flash on disable -- colors/timings
-  unchanged).
+- **Button 4 (GPIO5):** dual-purpose -- a short press toggles the LED
+  audio overlay alone; a press held for 900ms or longer instead toggles
+  the unified **Audio Mode** (see [Audio Mode (unified)](#audio-mode-unified)
+  below). An earlier single-purpose click-gesture state machine was
+  removed entirely; the current debounce/press-edge mechanics are
+  unchanged by that history.
+  - **Short press** (released before 900ms): fires on the debounced
+    **release edge**, only if no long hold completed during that press.
+    Prints `[BUTTON4] Audio overlay toggle`, then `[AUDIO] Overlay: ON` or
+    `OFF`, then the matching `[CUE]` lines (green single-flash on enable,
+    double red-flash on disable).
+  - **Long hold** (held 900ms+): fires exactly once, the instant the
+    threshold is crossed -- not on release, so continuing to hold never
+    fires it again, and releasing after a long hold does **not** also
+    fire the short-press overlay toggle. See
+    [Audio Mode (unified)](#audio-mode-unified) for what it does and its
+    exact log/cue output.
   - Mic diagnostics via Button4 has been removed; use the `d` serial
-    command instead.
+    command instead. (Neither the short nor long press is a literal
+    "microphone diagnostic" -- see that section for what each actually
+    does.)
 
 **Boot-arming:** if GPIO5 reads LOW when firmware starts (a wiring/short
 issue on real hardware, not something firmware can fix), it is **not**
@@ -2078,13 +2162,9 @@ single letters like `o` never collide with word commands like `overlays`.
 | `mcycle` | automatic dance-style speed/direction test (13-step sequence) |
 | `mkick` | toggle the startup kick on/off |
 | `mstatus` | full motor PWM-test status |
-| `danceon` | enable live microphone-driven `DanceEngine` (see [Dance Engine V1](#dance-engine-v1-development-branch)) |
-| `danceoff` | disable `DanceEngine` and coast the motor safely (cancels every pending kick/ramp/hold/reversal/test) |
-| `dancestatus` | full `DanceEngine` status |
-| `dancetest` | run the deterministic, non-blocking simulated-energy sequence (auto-enables `DanceEngine` if off) |
-| `dancetestoff` | cancel the simulated test/override and return to live microphone input (if still enabled) |
-| `dancequiet` / `dancemid` / `dancehigh` / `dancepeak` | temporarily simulate a fixed quiet/mid/high/peak(+strong transient) energy level |
-| `musicmotor on` | enable music-reactive movement (see [MusicMotorController](#musicmotorcontroller-development-branch)) |
+| `audiomode on` / `off` / `status` | unified Audio Mode (LED overlay + `MusicMotorController` together) -- same coordinated path as Button 4 long-hold (see [Audio Mode (unified)](#audio-mode-unified)); dev/test convenience, normal users use the button |
+| `danceon`, `danceoff`, `dancestatus`, `dancetest`, `dancetestoff`, `dancequiet`/`dancemid`/`dancehigh`/`dancepeak` | **[unavailable by default]** legacy `DanceEngine` commands, superseded by `MusicMotorController` -- see [Dance Engine V1](#dance-engine-v1-superseded----disabled-by-default). Only exist in a build with `ENABLE_LEGACY_DANCE_ENGINE=1` |
+| `musicmotor on` | enable music-reactive movement ALONE (see [MusicMotorController](#musicmotorcontroller-development-branch)) -- for full Audio Mode, prefer `audiomode on` or Button 4 |
 | `musicmotor off` | disable it and coast the motor safely |
 | `musicmotor status` | full `MusicMotorController` status |
 | `musicmotor intensity` | energy pipeline snapshot: `fastEnergy`/`songEnergy`/`baselineEnergy`/band/thresholds |

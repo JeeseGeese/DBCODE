@@ -182,6 +182,9 @@ milestone":
   now. Add only if a future generation needs materially different
   movement while actively speaking versus listening (see
   `docs/BEHAVIOR_ENGINE_DEVELOPMENT.md` section 14).
-- **Merging `DanceEngine` into `MusicMotorController`** (or retiring
-  `DanceEngine` outright) — not decided either way; see the open
-  engineering question in `CURRENT_STATUS.md`.
+- **Deleting `DanceEngine` outright** — decided *in principle*
+  (`MusicMotorController` Revision 10.1 is now Sunny's sole production
+  music-driven dancing engine; `DanceEngine` is superseded and gated off
+  by default via `ENABLE_LEGACY_DANCE_ENGINE=0`), but not yet executed —
+  see the "DanceEngine removal checklist" in `CURRENT_STATUS.md` for the
+  physical-validation prerequisites that must be met first.

@@ -7,8 +7,8 @@ and to go stale quickly on purpose, because it only claims to describe
 edit, verify anything load-bearing against `git log`, `git status`, and
 `README.md` rather than trusting it blindly.
 
-Last updated: 2026-07-30 (checkpoint commit + tag pass, same day as initial
-creation).
+Last updated: 2026-07-31 (unified Audio Mode / DanceEngine deprecation
+pass, on top of the 2026-07-30 checkpoint).
 
 ## Project status
 
@@ -37,6 +37,28 @@ limitations" below.
 
 (Most recent first. As of the 2026-07-30 engineering checkpoint, all of
 this is committed at `64e8aee` — see "Current git milestone" below.)
+
+- **Unified Audio Mode + `DanceEngine` deprecation** — see "Current git
+  milestone" below for the exact commit: `MusicMotorController`
+  Revision 10.1 is now Sunny's sole production music-driven dancing
+  engine. `DanceEngine` is superseded and gated off by default
+  (`ENABLE_LEGACY_DANCE_ENGINE=0`, `include/DanceEngine.h`) — see
+  "Open engineering questions" below, now resolved, and the "DanceEngine
+  removal checklist" further down. Button 4's long-hold gesture now
+  toggles one coordinated `setUserAudioModeEnabled()` state (LED overlay +
+  `MusicMotorController` together, `src/Controls.cpp`) instead of
+  `ExpressiveMotion`'s `AUDIO_REACTIVE` mode; normal users no longer need
+  the serial monitor to start music-driven dancing. Host-validated
+  (`test_host/audio_mode_button4_integration.cpp`, 13 test groups).
+  **Physically validated (2026-07-31, partial):** boot defaults (Audio
+  Mode/overlay/MusicMotor all OFF, motor stopped), Button 4 short press
+  (LED overlay toggle, correct PARTIAL status), and Button 4 long-hold
+  **enable** (one green flash, `[AUDIO MODE] ON | LED overlay=ON |
+  MusicMotor=ON`, `MusicMotorController` took real motor ownership) — all
+  confirmed on real hardware. **Not yet physically validated:** long-hold
+  **disable**/safe-stop, the motor-ownership-rejection path, and reaction
+  to actual music playback — see "Known limitations" below and the
+  "DanceEngine removal checklist" for what's still open.
 
 - MusicMotorController Revision 10.1: fixed a genuine `SUSTAINED_DRIVE`
   deadlock (stuck at M0 while logging an unapplied step) and a stale
@@ -67,9 +89,9 @@ this is committed at `64e8aee` — see "Current git milestone" below.)
   of `ExpressiveMotion`.
 - `ExpressiveMotion` pattern-based idle/audio-reactive movement
   (`GENTLE_SWAY` through `DRAMATIC_SWEEP`, audio-triggered patterns).
-- `DanceEngine` V1 (earlier, simpler mic-driven choreography — still
-  present and user-selectable, mutually exclusive with
-  `MusicMotorController` at runtime, not merged into it).
+- `DanceEngine` V1 (earlier, simpler mic-driven choreography — superseded
+  by `MusicMotorController` and disabled by default as of the unified
+  Audio Mode work above; source retained for reference/rollback only).
 - `MotorPwmCalibration` PWM primitives and calibration tooling.
 - `v1.0.0` tagged baseline: four-button control, WS2812 effects, INMP441
   audio input + overlay, bidirectional DRV8833 motor control, the
@@ -130,10 +152,14 @@ each file's own header comment for its individual build/run command.
 - **No thermal or current-sensing hardware** — over-current, stall, and
   thermal conditions cannot be detected in software on this hardware,
   full stop.
-- **`DanceEngine` and `MusicMotorController` both remain present and
-  user-selectable**, mutually exclusive at runtime but not merged into a
-  single engine — this is a deliberate current-state fact, not
-  necessarily a permanent one (see `ROADMAP.md`).
+- **Unified Audio Mode is only partially physically validated** (see
+  "Recently completed work" above for the exact list) — Button 4's
+  long-hold **enable** path and the green confirmation cue are confirmed
+  on real hardware; long-hold **disable**/safe-stop, the
+  motor-ownership-rejection path and its cue, and reaction to actual music
+  playback are not yet confirmed. See "DanceEngine removal checklist"
+  below for what has to be true (full physical validation included)
+  before `DanceEngine` is deleted outright rather than just gated off.
 - **Boot takes ~30-40 seconds before serial commands are processed**
   (`HardwareTest` + `MicRetest` both block at the end of `setup()`) — this
   is intentional bring-up tooling, not a bug, but affects every physical
@@ -185,11 +211,35 @@ content (`MotorPwmCalibration` through `MusicMotorController` Revision
 git milestone" below. `docs/AI_HANDOFF.md` has the full before/after
 detail if a future session needs it.
 
+## DanceEngine removal checklist
+
+**Decided:** `MusicMotorController` Revision 10.1 is Sunny's sole
+production music-driven dancing engine; `DanceEngine` is superseded
+(resolves the former "should DanceEngine be retired?" open question
+below). `DanceEngine` is gated off by default
+(`ENABLE_LEGACY_DANCE_ENGINE=0`) rather than deleted outright, pending:
+
+- [x] Unified Audio Mode builds successfully (`pio run`, 2026-07-31 —
+      RAM 7.1%/23,352B, Flash 6.7%/439,605B, zero source warnings)
+- [x] Host tests pass (13/13 `test_host/*.cpp` files, 2026-07-31)
+- [ ] Button long-hold behavior physically validated — **enable path
+      confirmed 2026-07-31** (green flash, correct log line); disable
+      path not yet tested
+- [ ] MusicMotor enable/disable physically validated — **enable
+      confirmed 2026-07-31** (`musicmotor status` showed `Enabled: yes`,
+      real motor ownership); disable not yet tested
+- [ ] Safe stop physically validated
+- [ ] No unique required DanceEngine behavior remains
+- [ ] Legacy rollback no longer needed
+
+The first two items are code/build facts, verified directly. Every
+remaining item requires human-observed real-hardware behavior — **do not
+mark those complete without it.** Partial progress is noted inline above;
+the boxes stay unchecked until each behavior's full ON/OFF/rejection cycle
+has been confirmed, not just one direction.
+
 ## Open engineering questions
 
-- Should `DanceEngine` eventually be retired in favor of
-  `MusicMotorController`, or is there a reason to keep both
-  user-selectable long-term? Not yet decided.
 - What is the actual root cause class for cases where the motor needs a
   manual assist from a dead stop under load — was this fully explained by
   the mechanical belt-preload fix, or could a residual case remain under
@@ -228,6 +278,12 @@ detail if a future session needs it.
   checkpoint marker only, explicitly named as such in its own annotation.
   **Not pushed** — local only, per explicit instruction not to push
   without separate approval.
+- **Committed 2026-07-31:** the unified Audio Mode / `DanceEngine`
+  deprecation work described in "Recently completed work" above, on top of
+  `a5039a8` (`sunny-rev10.1-checkpoint`) — see `git log`/`git show --stat`
+  for the exact commit (this file avoids hardcoding its own commit hash).
+  Tagged `sunny-audio-mode-v1-physical-validation`. **Not pushed** — local
+  only, per explicit instruction not to push without separate approval.
 - No prior milestone tag existed for the expressive-motion/MusicMotor
   work before this — a future tag (e.g. covering the point where
   `ExpressiveMotion` and `BehaviorEngine` complete physical validation, or

@@ -12,6 +12,7 @@ enum class VisualCueType {
   OVERLAY_DISABLED,          // two soft red flashes -- LED audio-reactive overlay OFF
   MOTOR_AUDIO_REACTIVE_ON,   // one purple flash -- expressive AUDIO_REACTIVE motor mode ON
   MOTOR_AUDIO_REACTIVE_OFF,  // one gold flash -- expressive AUDIO_REACTIVE motor mode OFF
+  AUDIO_MODE_BLOCKED,        // three quick white flashes -- Audio Mode enable rejected (motor owned elsewhere)
 };
 
 // Arms a new cue starting now. Replaces any cue already in progress.

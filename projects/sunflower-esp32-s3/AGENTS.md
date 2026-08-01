@@ -450,9 +450,16 @@ baseline and validated feature work since. Any change that touches
 adjacent code should be checked against these before being called done:
 
 - Four-button control (Mode/Mute/Brightness/Button4) — all four
-  physically verified at `v1.0.0` and unchanged since except Button4's
-  documented click-gesture-machine removal (now a plain debounced press
-  edge).
+  physically verified at `v1.0.0`. Button4 has changed since: its
+  original click-gesture machine was removed (short press = overlay
+  toggle on the debounced release edge), then it gained dual-purpose
+  short/long-press detection, and its long-hold binding has since moved
+  from `ExpressiveMotion`'s `AUDIO_REACTIVE` mode to the unified Audio
+  Mode (`setUserAudioModeEnabled()`, `src/Controls.cpp`) — LED overlay +
+  `MusicMotorController` together. The short-press/long-hold mechanics
+  themselves are host-tested (`test_host/audio_mode_button4_integration.cpp`)
+  but the current long-hold binding is **not yet physically validated** —
+  see `CURRENT_STATUS.md`'s "DanceEngine removal checklist."
 - WS2812 LED effects and the audio-reactive overlay system — physically
   verified at `v1.0.0`.
 - INMP441 audio input and audio-reactive overlay response.

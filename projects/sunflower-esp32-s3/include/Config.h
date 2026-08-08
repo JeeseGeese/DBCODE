@@ -1640,10 +1640,22 @@ constexpr uint32_t SPEAKER_TONE_RAMP_MS = 30;
 constexpr float SPEAKER_TONE_AMPLITUDE_FRACTION = 0.075f;
 constexpr int16_t SPEAKER_TONE_AMPLITUDE = (int16_t)(SPEAKER_TONE_AMPLITUDE_FRACTION * 32767.0f);
 
+// Whether SpeakerTest plays a one-shot automatic demonstration tone this
+// long after "Digital silence active" first prints. Defaulted OFF
+// 2026-08-01 for the Stage S1 speaker bring-up work -- Sunny's default
+// boot must stay 100% silent on the speaker (silence only, no automatic
+// enable of any tone) until a human deliberately issues a serial tone
+// command (Stage S2, e.g. 't' or 'speaker tone'). Flip to 1 to restore
+// the old auto-demo behavior for comparison; when 0, the delay constant
+// below is simply unused (harmless, not dead-stripped, kept for the
+// commented-out behavior's own reference).
+#define ENABLE_SPEAKER_AUTO_DEMO_TONE 0
+
 // One-shot automatic demonstration tone, this long after "Digital silence
 // active" first prints -- never repeats automatically afterward (see
 // SPEAKER_TONE_DURATION_MS's own "no auto-repeat" requirement); only the
-// 't' serial command can trigger it again.
+// 't' serial command can trigger it again. Only takes effect if
+// ENABLE_SPEAKER_AUTO_DEMO_TONE is 1 (see above).
 constexpr uint32_t SPEAKER_AUTO_DEMO_DELAY_MS = 5000;
 
 // --- Temporary alternate test mode: 440Hz square wave, 's' command (see
@@ -1723,6 +1735,28 @@ constexpr uint32_t LOUD_DURATION_MS = 500;
 constexpr uint32_t LOUD_RAMP_MS = 30;
 constexpr float LOUD_AMPLITUDE_FRACTION = 0.20f;
 
+// --- 'speaker tone': the deliberate, serial-only Stage S2 bring-up test
+// (see docs/SPEAKER_BRINGUP_PLAN.md) -- the first sound a human should
+// ever trigger on real hardware, after Stage S0 preflight is complete.
+// Deliberately its own constants, never the 'loud' path above: 440Hz
+// (a neutral, easily-recognized reference tone, matching this file's
+// other tone tests), 300ms (within the requested 250-500ms window --
+// long enough to be clearly audible, short enough that a startled human
+// can react before it ends), 20ms ramp (matches this file's established
+// short-segment convention, e.g. BEEP_RAMP_MS, to avoid a click on
+// start/stop without eating too much of a 300ms window), and 5%
+// amplitude -- deliberately lower than the standard 7.5% 't'/'s' tests
+// and far below 'loud's 20% cap, since gain/volume have not yet been
+// physically confirmed at all when this is first used. Mono content
+// (like every other test here): the same sample is duplicated into both
+// I2S stereo slots by feedSpeakerChunk(), there is no separate L/R
+// signal. Sample rate is not configurable per-test -- it is always
+// I2S_SAMPLE_RATE (the one shared full-duplex bus's fixed rate).
+constexpr float SPEAKER_BRINGUP_TONE_FREQUENCY_HZ = 440.0f;
+constexpr uint32_t SPEAKER_BRINGUP_TONE_DURATION_MS = 300;
+constexpr uint32_t SPEAKER_BRINGUP_TONE_RAMP_MS = 20;
+constexpr float SPEAKER_BRINGUP_TONE_AMPLITUDE_FRACTION = 0.05f;
+
 // --- Procedural music player: 'music1'-'music4' (see SpeakerTest.cpp's
 // Note/Song/songSample()) -- shared amplitude and per-note attack/release
 // ramp for every song (the ramp is additionally capped at 40% of each
@@ -1730,3 +1764,138 @@ constexpr float LOUD_AMPLITUDE_FRACTION = 0.20f;
 // audible sustained portion).
 constexpr float MUSIC_AMPLITUDE_FRACTION = 0.10f;
 constexpr uint32_t MUSIC_NOTE_RAMP_MS = 15;
+
+// --- 'speaker t'/'speaker 1'/'speaker 2'/'speaker 3'/'speaker stop'/
+// 'speaker v'/'speaker +'/'speaker -'/'speaker h': the physical-bring-up
+// test bench requested for the MAX98357A gain/volume sweep. Namespaced
+// under the existing 'speaker' word command (see Controls.cpp's
+// dispatchSpeakerCommand()) rather than given bare single-char tokens --
+// 't'/'s'/'v'/'h'/'+'/'-' are ALL already reserved elsewhere in this
+// firmware (t/s = the original speaker sine/square tests, v = printAudioVisualState,
+// h = general help, +/- = LED brightness; '1'/'2'/'3' are immediate, no-Enter
+// bytes in main.cpp's pollSerialDispatcher bound to real MOTOR tests --
+// IDLE_SWAY/priority-test/breakaway-test -- via ENABLE_MOTOR_BEHAVIOR_TEST).
+// Repurposing any of those would either break an existing verified control
+// or, for '1'/'2'/'3', risk firing a physical motor test instead of (or as
+// well as) a tone. The 'speaker' prefix is Enter-terminated and only
+// matched once a line is already pending, so none of this can collide with
+// main.cpp's reserved immediate bytes -- see that file's pollSerialDispatcher().
+constexpr float SPEAKER_BENCH_TONE_RAMP_MS = 20;  // matches this file's established short-segment convention
+struct SpeakerBenchPreset {
+  float frequencyHz;
+  uint32_t durationMs;
+};
+// Index order matches SpeakerTest.cpp's startSpeakerBenchT()/1()/2()/3()
+// exactly: [0]='speaker t', [1]='speaker 1', [2]='speaker 2', [3]='speaker 3'.
+constexpr SpeakerBenchPreset SPEAKER_BENCH_PRESETS[] = {
+    {440.0f, 750},
+    {220.0f, 750},
+    {440.0f, 750},
+    {880.0f, 500},
+};
+constexpr uint8_t SPEAKER_BENCH_PRESET_COUNT = sizeof(SPEAKER_BENCH_PRESETS) / sizeof(SPEAKER_BENCH_PRESETS[0]);
+
+// Conservative amplitude ladder for 'speaker +'/'speaker -'/'speaker v' --
+// full-scale (1.0) is never reachable by design; 25% is the ceiling during
+// this initial bring-up. Index 1 (5%) is the boot default, matching the
+// existing Stage S2 'speaker tone' amplitude for continuity.
+constexpr float SPEAKER_BENCH_VOLUME_STEPS_FRACTION[] = {0.02f, 0.05f, 0.08f, 0.12f, 0.18f, 0.25f};
+constexpr uint8_t SPEAKER_BENCH_VOLUME_STEP_COUNT =
+    sizeof(SPEAKER_BENCH_VOLUME_STEPS_FRACTION) / sizeof(SPEAKER_BENCH_VOLUME_STEPS_FRACTION[0]);
+constexpr uint8_t SPEAKER_BENCH_VOLUME_DEFAULT_INDEX = 1;  // 5%
+
+// Consecutive i2s_write() failures required before '[SPEAKER] WARNING:
+// repeated write failures' escalates beyond the single per-occurrence
+// '[SPEAKER] I2S write error' line -- avoids flooding the serial monitor
+// if the bus fails continuously (updateSpeakerTest() runs every loop()).
+constexpr uint32_t SPEAKER_WRITE_REPEATED_FAILURE_THRESHOLD = 10;
+
+// --- 'speaker fmt1'/'fmt2'/'fmt3'/'fmtstatus': Stage S3 buzz/distortion
+// diagnostic, added to empirically A/B which 32-bit-slot sample packing the
+// physically-connected MAX98357A actually reproduces cleanly, after a full
+// source-level review of SharedI2S.cpp/SpeakerTest.cpp's sample formatting
+// found no mono/stereo, slot-order, sign, overflow, phase-continuity, or
+// double-scaling defect (see the task report for the full checklist
+// result) -- the shared bus is hard-configured at 32 bits-per-slot for
+// both RX and TX (changing it would also change the microphone's verified
+// RX format, out of scope here), so what remains genuinely open is only
+// which PORTION of that 32-bit slot the amplifier expects real data in.
+// Fixed at a conservative 2% amplitude and 440Hz/750ms across all three,
+// deliberately independent of the 'speaker v'/'+'/'-' bench volume ladder,
+// so the three formats are a fair, consistent A/B comparison. See
+// fmtDiagSample() in SpeakerTest.cpp for the exact per-format bit layout.
+constexpr float SPEAKER_FMT_DIAG_FREQUENCY_HZ = 440.0f;
+constexpr uint32_t SPEAKER_FMT_DIAG_DURATION_MS = 750;
+constexpr uint32_t SPEAKER_FMT_DIAG_RAMP_MS = 20;  // matches this file's established short-segment convention
+constexpr float SPEAKER_FMT_DIAG_AMPLITUDE_FRACTION = 0.02f;
+
+// --- 'speaker sweep'/'speaker melody'/'speaker chord'/'speaker noise':
+// multi-tone speaker bring-up tests for judging the MAX98357A + a real
+// speaker load more realistically than a single 440Hz tone -- see
+// src/SpeakerTest.cpp's sweepSample()/boundedNoteSequenceSample()/
+// noiseSample() (all pre-existing generic engines, reused unchanged here)
+// and the SPEAKER_BENCH_MELODY_NOTES/SPEAKER_BENCH_CHORD_NOTES note tables
+// in that file. Sweep/melody/chord all use the CURRENT bench volume (see
+// 'speaker v'/'+'/'-' above, SPEAKER_BENCH_VOLUME_STEPS_FRACTION), read
+// live at the moment each test starts -- not a separate fixed amplitude.
+// Noise is the one exception, deliberately capped independent of bench
+// volume (see SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION below).
+
+// 'speaker sweep': same 150Hz->3000Hz range as the existing bare 'sweep'
+// command (SPEAKER_SWEEP_START_HZ/END_HZ above, reused directly -- no new
+// constants needed for the endpoints), but a longer ~6s duration ("about 6
+// seconds", vs the original's fixed 4s) and the file's established 20ms
+// short-segment ramp (vs the original's 30ms) -- both deliberately
+// independent knobs so the original bare 'sweep' test is unaffected.
+constexpr uint32_t SPEAKER_BENCH_SWEEP_DURATION_MS = 6000;
+constexpr uint32_t SPEAKER_BENCH_SWEEP_RAMP_MS = 20;
+
+// Per-note fade for 'speaker melody'/'speaker chord' (boundedNoteSequenceSample()
+// caps this at 40% of each note's own duration, same convention as the
+// existing music1-4 engine's MUSIC_NOTE_RAMP_MS) -- shorter than the
+// standalone-tone 20ms convention since some notes here are only 40ms gaps.
+constexpr uint32_t SPEAKER_BENCH_NOTE_RAMP_MS = 15;
+
+// 'speaker noise': 2s duration (vs the original bare 'noise' command's 1s),
+// same 30ms ramp convention as the original (NOISE_RAMP_MS, reused
+// directly). Amplitude is min(current bench volume, this cap) -- "maximum
+// 10% regardless of current bench volume" -- computed at call time in
+// startSpeakerBenchNoise(), never exceeding this ceiling even if the bench
+// volume ladder is set to its 25% maximum, since this test exists
+// specifically to reveal hiss/buzz/rattling, not to be a loudness test.
+constexpr uint32_t SPEAKER_BENCH_NOISE_DURATION_MS = 2000;
+constexpr float SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION = 0.10f;
+
+// --- 'speaker voltest'/'speaker volquick'/'speaker volstop'/
+// 'speaker volstatus': automatic digital-amplitude ladder diagnostic -- see
+// src/SpeakerTest.cpp's VOLTEST_FULL_STEPS/VOLTEST_QUICK_STEPS for the full
+// per-level sequence (three sine tones + gaps + a melody excerpt for
+// 'voltest'; two tones + gaps for the shorter 'volquick'). Both reuse the
+// existing sine/note-sequence engines and startTest() scheduler completely
+// unchanged -- no second I2S write path, no new pin/clock/format. Every
+// level change waits for the previous level's audio to reach genuine
+// digital silence first (see armVolLadderStep()'s own comment) before the
+// next amplitude is armed -- never an instant jump mid-tone.
+constexpr float VOLTEST_FULL_LEVELS_FRACTION[] = {0.02f, 0.05f, 0.08f, 0.12f, 0.18f,
+                                                    0.25f, 0.35f, 0.50f, 0.65f, 0.80f, 1.00f};
+constexpr uint8_t VOLTEST_FULL_LEVEL_COUNT =
+    sizeof(VOLTEST_FULL_LEVELS_FRACTION) / sizeof(VOLTEST_FULL_LEVELS_FRACTION[0]);
+constexpr float VOLTEST_QUICK_LEVELS_FRACTION[] = {0.12f, 0.25f, 0.50f, 0.75f, 1.00f};
+constexpr uint8_t VOLTEST_QUICK_LEVEL_COUNT =
+    sizeof(VOLTEST_QUICK_LEVELS_FRACTION) / sizeof(VOLTEST_QUICK_LEVELS_FRACTION[0]);
+// Fade in/out for every sine step in the ladder -- same 20ms convention this
+// file already establishes for short segments (SPEAKER_BENCH_TONE_RAMP_MS/
+// SPEAKER_FMT_DIAG_RAMP_MS), named separately so the ladder's own timing can
+// be retuned independently of those unrelated tests.
+constexpr uint32_t VOLTEST_TONE_RAMP_MS = 20;
+// First N notes of SPEAKER_BENCH_MELODY_NOTES (SpeakerTest.cpp) used as the
+// ladder's "short segment of the existing diagnostic melody" -- the first 7
+// notes total 1840ms, within the requested ~1.5-2s window. Reuses the SAME
+// table 'speaker melody' already plays from -- not a new composition.
+constexpr uint8_t VOLTEST_MELODY_EXCERPT_NOTE_COUNT = 7;
+// Warning-print thresholds (see beginVolLadderLevel() in SpeakerTest.cpp):
+// HIGH OUTPUT TEST prints for every level >= this fraction; the 80%/100%
+// warnings print only at exactly those two specific levels.
+constexpr float VOLTEST_HIGH_OUTPUT_THRESHOLD_FRACTION = 0.50f;
+constexpr float VOLTEST_EIGHTY_PERCENT_WARNING_FRACTION = 0.80f;
+constexpr float VOLTEST_FULL_SCALE_WARNING_FRACTION = 1.00f;

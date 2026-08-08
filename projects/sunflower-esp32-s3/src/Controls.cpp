@@ -467,10 +467,20 @@ static void printHelp() {
   Serial.println(F("  motion [next|off|idle|audio|status|demo] = expressive motion (dev branch, see README)"));
   Serial.println(F("  behavior/beh [next|manual|idle|curious|listening|pondering|excited|sleeping|status|demo]"));
   Serial.println(F("           = personality-state coordinator (dev branch, see README)"));
+  Serial.println(F("  speaker tone = Stage S2 bring-up test tone (440Hz, 300ms, 5% amplitude) -- the recommended"));
+  Serial.println(F("           FIRST physical sound test, see docs/SPEAKER_BRINGUP_PLAN.md   speaker stop = stop it"));
+  Serial.println(F("  speaker t|1|2|3 = bench tones (440/220/440/880Hz) at adjustable volume   speaker stop = stop"));
+  Serial.println(F("  speaker v|+|- = print/raise/lower bench volume (2/5/8/12/18/25%)   speaker h = bench help"));
+  Serial.println(F("  speaker fmt1|fmt2|fmt3 = buzz/distortion A/B diagnostic (16/24/32-bit slot packing,"));
+  Serial.println(F("           440Hz/750ms/2% each)   speaker fmtstatus = describe all three formats"));
+  Serial.println(F("  speaker sweep|melody|chord|noise = multi-tone bring-up tests at current bench volume"));
+  Serial.println(F("           (noise capped at 10% regardless of bench volume)   speaker h = full bench help"));
+  Serial.println(F("  speaker voltest|volquick = automatic 2->100% multi-tone volume ladder (full ~49s / quick ~9.5s)"));
+  Serial.println(F("           speaker volstop = abort it   speaker volstatus = show its state"));
   Serial.println(F("  t/s = speaker sine/square 440Hz test tone (dev branch, see README)"));
   Serial.println(F("  low|mid|high = speaker sine test at 150/440/1500Hz     sweep = 150->3000Hz log sweep"));
   Serial.println(F("  melody = C5 E5 G5 C6 x2      beep = 1000Hz 150ms on/off x5      noise = white noise"));
-  Serial.println(F("  loud = [TEMPORARY DIAGNOSTIC] 1000Hz at 20% amplitude"));
+  Serial.println(F("  loud = [TEMPORARY DIAGNOSTIC, NOT the first test] 1000Hz at 20% amplitude"));
   Serial.println(F("  music1|music2|music3|music4 = Twinkle/Mary/Ode to Joy/Mario (loops until stopped)"));
   Serial.println(F("  stopmusic = stop music playback, return to digital silence"));
   Serial.println(F("  g = [DIAGNOSTIC ONLY] force the enabled/green cue, no overlay state change"));
@@ -673,6 +683,100 @@ static void dispatchBehaviorCommand(const char *args) {
   } else {
     printBehaviorHelp();
     Serial.printf("[CMD] Unknown 'behavior' subcommand '%s'\n", args);
+  }
+}
+
+// "speaker" word command -- Stage S2 speaker bring-up (see
+// docs/SPEAKER_BRINGUP_PLAN.md). "speaker tone" plays the deliberate,
+// conservative bring-up test tone (startSpeakerBringupTone(), see
+// include/SpeakerTest.h); "speaker stop" returns to digital silence.
+// Deliberately separate from the existing flat 't'/'s'/'low'/.../'loud'
+// diagnostic commands -- this is the one namespaced entry point meant to
+// be the FIRST sound a human triggers during physical bring-up, distinct
+// from that older diagnostic suite. Never touches MusicMotorController,
+// Audio Mode, or the microphone.
+//
+// "speaker t"/"1"/"2"/"3"/"v"/"+"/"-"/"h" are the gain/volume bring-up test
+// bench (see SPEAKER_BENCH_* in Config.h and include/SpeakerTest.h for the
+// full rationale) -- namespaced here rather than given bare single-char
+// tokens because 't'/'s'/'v'/'h'/'+'/'-' are ALL already reserved by other,
+// currently-working commands (the original speaker sine/square tests,
+// printAudioVisualState, general help, LED brightness), and bare '1'/'2'/'3'
+// are live, no-Enter MOTOR test triggers in main.cpp's pollSerialDispatcher
+// (IDLE_SWAY/priority-test/breakaway-test, ENABLE_MOTOR_BEHAVIOR_TEST) --
+// repurposing any of those would silently break an existing verified
+// control or risk firing a physical motor test. "speaker stop" (already
+// above) doubles as this bench's stop command.
+//
+// "speaker fmt1"/"fmt2"/"fmt3"/"fmtstatus" are the Stage S3 buzz/distortion
+// A/B diagnostic (see include/SpeakerTest.h) -- three candidate 32-bit I2S
+// slot packings (16-bit MSB-justified / 24-bit left-justified / full
+// 32-bit), fixed 440Hz/750ms/2% each, for isolating which packing the
+// physically-connected MAX98357A reproduces cleanly.
+//
+// "speaker sweep"/"melody"/"chord"/"noise" are multi-tone bring-up tests
+// (see include/SpeakerTest.h) for judging the amplifier + a real speaker
+// load more realistically than a single tone -- all at the current bench
+// volume except noise, which is independently capped at 10%.
+//
+// "speaker voltest"/"volquick"/"volstop"/"volstatus" are the automatic
+// digital-amplitude ladder diagnostic (see include/SpeakerTest.h) --
+// progressively raises amplitude through a fixed sequence of levels,
+// playing a short multi-tone diagnostic at each, for judging usable
+// loudness/distortion onset/hiss growth/amplifier stability. Fully
+// non-blocking, aborts immediately on any I2S write fault.
+static void dispatchSpeakerCommand(const char *args) {
+  while (*args == ' ') args++;
+  if (strcasecmp(args, "tone") == 0) {
+    startSpeakerBringupTone();
+  } else if (strcasecmp(args, "stop") == 0) {
+    stopSpeakerBringupTone();
+  } else if (strcmp(args, "t") == 0) {
+    startSpeakerBenchT();
+  } else if (strcmp(args, "1") == 0) {
+    startSpeakerBench1();
+  } else if (strcmp(args, "2") == 0) {
+    startSpeakerBench2();
+  } else if (strcmp(args, "3") == 0) {
+    startSpeakerBench3();
+  } else if (strcmp(args, "v") == 0) {
+    printSpeakerBenchVolume();
+  } else if (strcmp(args, "+") == 0) {
+    speakerBenchVolumeUp();
+  } else if (strcmp(args, "-") == 0) {
+    speakerBenchVolumeDown();
+  } else if (strcmp(args, "h") == 0) {
+    printSpeakerBenchHelp();
+  } else if (strcasecmp(args, "fmt1") == 0) {
+    startSpeakerFmt1();
+  } else if (strcasecmp(args, "fmt2") == 0) {
+    startSpeakerFmt2();
+  } else if (strcasecmp(args, "fmt3") == 0) {
+    startSpeakerFmt3();
+  } else if (strcasecmp(args, "fmtstatus") == 0) {
+    printSpeakerFmtStatus();
+  } else if (strcasecmp(args, "sweep") == 0) {
+    startSpeakerBenchSweep();
+  } else if (strcasecmp(args, "melody") == 0) {
+    startSpeakerBenchMelody();
+  } else if (strcasecmp(args, "chord") == 0) {
+    startSpeakerBenchChord();
+  } else if (strcasecmp(args, "noise") == 0) {
+    startSpeakerBenchNoise();
+  } else if (strcasecmp(args, "voltest") == 0) {
+    startSpeakerVolTest();
+  } else if (strcasecmp(args, "volquick") == 0) {
+    startSpeakerVolQuick();
+  } else if (strcasecmp(args, "volstop") == 0) {
+    stopSpeakerVolTest();
+  } else if (strcasecmp(args, "volstatus") == 0) {
+    printSpeakerVolStatus();
+  } else {
+    Serial.printf(
+        "[CMD] Unknown 'speaker' subcommand '%s' -- try: "
+        "tone|stop|t|1|2|3|v|+|-|h|fmt1|fmt2|fmt3|fmtstatus|sweep|melody|chord|noise|"
+        "voltest|volquick|volstop|volstatus\n",
+        args);
   }
 }
 
@@ -914,6 +1018,8 @@ static void dispatchCommand(const char *cmd) {
     dispatchMusicMotorCommand(cmd + 10);
   else if (strncasecmp(cmd, "audiomode", 9) == 0 && (cmd[9] == '\0' || cmd[9] == ' '))
     dispatchAudioModeCommand(cmd + 9);
+  else if (strncasecmp(cmd, "speaker", 7) == 0 && (cmd[7] == '\0' || cmd[7] == ' '))
+    dispatchSpeakerCommand(cmd + 7);
   // Speaker diagnostic suite word commands (see include/SpeakerTest.h) --
   // ordinary Enter-terminated word commands, matching "motion"/"behavior"
   // ('t'/'s' are single-char but ALSO Enter-terminated -- see this file's

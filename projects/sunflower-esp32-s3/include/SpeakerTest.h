@@ -84,6 +84,152 @@ bool startSpeakerNoiseTest();
 // amplitude (never exceeded). Prints an explicit warning when triggered.
 bool startSpeakerLoudTest();
 
+// 'speaker tone': the Stage S2 bring-up test (see
+// docs/SPEAKER_BRINGUP_PLAN.md) -- 440Hz, 300ms, 5% amplitude (see
+// SPEAKER_BRINGUP_TONE_* in Config.h for the full rationale). Explicit
+// serial command only; never fires automatically. Prints the selected
+// frequency/amplitude/sample-rate/duration before playing. Refuses (same
+// as every other test here) if the speaker never initialized. Bounded
+// duration, auto-stops, non-blocking, cannot latch on indefinitely --
+// same safe scheduler every other test in this file already uses. Does
+// not touch MusicMotorController, Audio Mode, or the microphone in any
+// way.
+bool startSpeakerBringupTone();
+
+// 'speaker stop': explicit stop for the above (also works as a general
+// "stop whatever's playing" command, same as 'stopmusic' -- this is a
+// thin, differently-named entry point to the same underlying stop logic,
+// not a second implementation).
+bool stopSpeakerBringupTone();
+
+// --- 'speaker t'/'speaker 1'/'speaker 2'/'speaker 3'/'speaker v'/
+// 'speaker +'/'speaker -'/'speaker h': the gain/volume bring-up test bench
+// (see the SPEAKER_BENCH_* constants in Config.h for the full rationale,
+// including why these are namespaced under 'speaker' rather than given
+// bare single-char tokens -- 't'/'s'/'v'/'h'/'+'/'-' are all already
+// reserved elsewhere, and bare '1'/'2'/'3' are live, no-Enter motor test
+// triggers in main.cpp). 'speaker stop' (above) doubles as this bench's
+// stop command -- same underlying stopSpeakerMusic(), not a second one. ---
+
+// 'speaker t': 440Hz, 750ms, at the current bench volume (SPEAKER_BENCH_PRESETS[0]).
+bool startSpeakerBenchT();
+// 'speaker 1': 220Hz, 750ms, at the current bench volume (SPEAKER_BENCH_PRESETS[1]).
+bool startSpeakerBench1();
+// 'speaker 2': 440Hz, 750ms, at the current bench volume (SPEAKER_BENCH_PRESETS[2]).
+bool startSpeakerBench2();
+// 'speaker 3': 880Hz, 500ms, at the current bench volume (SPEAKER_BENCH_PRESETS[3]).
+bool startSpeakerBench3();
+
+// 'speaker v': prints the current bench amplitude (step index + percent).
+void printSpeakerBenchVolume();
+// 'speaker +': steps to the next-louder entry in SPEAKER_BENCH_VOLUME_STEPS_FRACTION,
+// clamped at the last (loudest, 25%) step -- never full-scale. Prints the new value.
+void speakerBenchVolumeUp();
+// 'speaker -': steps to the next-quieter entry, clamped at the first (2%) step.
+// Prints the new value.
+void speakerBenchVolumeDown();
+// 'speaker h': prints this bench's own command list (distinct from the
+// general 'h'/printHelp()).
+void printSpeakerBenchHelp();
+
+// --- Stage S3 buzz/distortion format diagnostic: 'speaker fmt1'/'fmt2'/
+// 'fmt3'/'fmtstatus'. Added after a full source-level review of this
+// module's and SharedI2S's sample formatting (mono/stereo duplication,
+// slot order, sign handling, overflow, phase continuity across DMA-buffer
+// boundaries, double amplitude scaling) found no coding defect -- see the
+// task report for the full checklist result. The shared bus is hard-fixed
+// at 32 bits-per-slot for both RX and TX (SharedI2S.cpp; changing it would
+// also change the microphone's verified RX format, out of scope here), so
+// what these three isolate is which PORTION of that 32-bit slot carries
+// real data -- a question only physical A/B listening can settle. All
+// three: 440Hz, 750ms, fixed 2% amplitude (independent of the 'speaker v'/
+// '+'/'-' bench ladder), 20ms fade in/out, mono duplicated to both I2S
+// stereo slots, continuous phase accumulator (no reset between DMA
+// buffers), returns to continuous digital silence on completion -- same
+// safe scheduler every other test in this file already uses. Refuses (same
+// as every other test) if the speaker never initialized. ---
+
+// 'speaker fmt1': 16-bit signed sine, MSB-justified into bits[31:16] of
+// each 32-bit slot (bits[15:0]=0) -- this is what the shared bus already
+// produces today for every other tone/test in this file.
+bool startSpeakerFmt1();
+// 'speaker fmt2': 24-bit signed sine, left-justified into bits[31:8] of
+// each 32-bit slot (bits[7:0]=0) -- the conventional "24-bit audio in a
+// 32-bit container" packing.
+bool startSpeakerFmt2();
+// 'speaker fmt3': 32-bit signed sine occupying the full 32-bit slot,
+// bits[31:0] -- the only one of the three with no zero-padded bits, i.e.
+// the one that uses every bit the hardware is actually clocking out at the
+// shared bus's fixed 32-bit slot width.
+bool startSpeakerFmt3();
+// 'speaker fmtstatus': prints all three formats' exact bit layout plus
+// which one was last started (and whether it's still playing).
+void printSpeakerFmtStatus();
+
+// --- Multi-tone speaker bring-up tests -- 'speaker sweep'/'melody'/
+// 'chord'/'noise'. For judging the MAX98357A + a real speaker load more
+// realistically than a single tone. All reuse this file's existing generic
+// engines (sweep/note-sequence/noise) and the same safe scheduler as every
+// other test above -- no second I2S write path, no pin/clock/format
+// changes. Sweep/melody/chord use the CURRENT bench volume ('speaker v'/
+// '+'/'-'), read live when each test starts; noise is independently capped
+// regardless of bench volume (see its own comment below). Refuses (same as
+// every other test) if the speaker never initialized. ---
+
+// 'speaker sweep': smooth logarithmic sine sweep, 150Hz -> 3000Hz (same
+// range as the existing bare 'sweep' test), ~6s, 20ms fade in/out, at the
+// current bench volume.
+bool startSpeakerBenchSweep();
+// 'speaker melody': an original ~8.8s diagnostic phrase (not a copy or
+// encoding of any existing song) spanning roughly 220-880Hz, mixing short
+// and sustained notes with brief silent gaps, at the current bench volume.
+bool startSpeakerBenchMelody();
+// 'speaker chord': a monophonic arpeggio (this engine has no simultaneous
+// polyphony -- see this file's top-of-file comment) standing in for a
+// simple major-chord test -- C4-E4-G4-C5 ascending then descending, twice,
+// ~4.76s ("about 5 seconds"), at the current bench volume.
+bool startSpeakerBenchChord();
+// 'speaker noise': white noise, 2s, capped at min(current bench volume,
+// 10%) regardless of how high the bench volume ladder is set -- for
+// detecting hiss/buzz/mechanical rattling, not a loudness test.
+bool startSpeakerBenchNoise();
+
+// --- Automatic volume-ladder diagnostic -- 'speaker voltest'/'volquick'/
+// 'volstop'/'volstatus'. Progressively raises the DIGITAL amplitude through
+// a fixed ladder, playing a short multi-frequency diagnostic sequence at
+// each level, for judging usable loudness, where distortion begins, and
+// whether hiss/buzz/instability grows with level. Fully non-blocking --
+// driven from updateSpeakerTest()/updateVolLadder() every loop() tick, no
+// delay() anywhere -- and reuses this file's existing sine/note-sequence
+// engines and startTest() scheduler completely unchanged (no second I2S
+// write path, no pin/clock/format/gain changes). Every level change waits
+// for the previous level's audio to reach genuine digital silence first
+// (see armVolLadderStep()'s own comment in SpeakerTest.cpp) -- never an
+// instant jump mid-tone. Aborts immediately (returns to continuous digital
+// silence) on any I2S write error, zero, or partial-write outcome, or when
+// any other test command interrupts it (including 'k'/'speaker stop'). ---
+
+// 'speaker voltest': 11 levels, 2% -> 100%, ~4-5s each (three sine tones +
+// gaps + a short excerpt of the existing diagnostic melody), ~49s total.
+// Prints "HIGH OUTPUT TEST" before every level >=50%, plus dedicated
+// warnings immediately before the 80% and 100% levels. Refuses (same as
+// every other test) if the speaker never initialized.
+bool startSpeakerVolTest();
+// 'speaker volquick': 5 levels, 12/25/50/75/100%, ~1.9s each (two sine
+// tones + gaps), ~9.5s total -- for quickly repeating the test later.
+bool startSpeakerVolQuick();
+// 'speaker volstop': immediately cancels an active voltest/volquick run and
+// returns to continuous digital silence. 'speaker stop'/'stopmusic'/'k'
+// also cancel an active run (see SpeakerTest.cpp's stopSpeakerMusic()/
+// stopSpeakerTest()) -- this is a dedicated, explicitly-named entry point
+// for the same underlying stop logic, not a second implementation.
+bool stopSpeakerVolTest();
+// 'speaker volstatus': prints active/inactive, test type (FULL/QUICK),
+// current level/amplitude/sequence stage, the last level fully completed,
+// and whether the most recent run ended via manual or safety-triggered
+// abort rather than reaching COMPLETE.
+void printSpeakerVolStatus();
+
 // --- Procedural music player -- see SpeakerTest.cpp's Note/Song/
 // songSample() for the generic playback engine. Unlike every test above,
 // these LOOP CONTINUOUSLY (printing "[SPEAKER] Loop N" on each repeat)

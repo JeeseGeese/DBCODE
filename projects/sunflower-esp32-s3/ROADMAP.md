@@ -19,7 +19,14 @@ code-complete and software-validated while its gate is still open; the
 gate is what says "this is actually ready to build on."
 
 ```
-Sunny V1  (baseline captured 2026-08-07 — see docs/V1/)
+Sunny V1  (baseline captured 2026-08-07 — see docs/V1/, tag
+           sunny-v1-baseline)
+   |
+   v
+Sunny V1.1  (current active development)
+   -- speaker buzz/static cleanup, speaker normal-use volume refinement,
+      continued LED BaseEffect/AudioOverlay refinement, power/ground
+      cleanup, firmware stability/polish -- see "V1.1" below
    |
    v
 [GATE] Speaker acceptable
@@ -32,11 +39,6 @@ Sunny V1  (baseline captured 2026-08-07 — see docs/V1/)
    -- combined LED+amplifier+motor load on the shared 5V rail measured
       under real conditions; either confirmed adequate or a dedicated
       motor supply adopted (see docs/current/POWER.md)
-   |
-   v
-Sunny V1.1  (next development phase)
-   -- speaker/LED/motor refinement, ExpressiveMotion/BehaviorEngine
-      physical validation, power/ground cleanup -- see "V1.1" below
    |
    v
 [GATE] V1.1 refinements physically validated
@@ -90,24 +92,30 @@ Audio Mode, DRV8833 motor fully integrated (`MusicMotorController`
 Rev 10.1, `ExpressiveMotion`/`BehaviorEngine`), 18 host tests, and this
 documentation baseline itself.
 
-## Sunny V1.1 — next development phase (not yet started)
+## Sunny V1.1 — current active development
 
-Begins once the "Speaker acceptable" and "Power architecture acceptable"
-gates above are passed. No major processor-architecture change is
-planned for this phase. Planned scope:
+Begins immediately following the `sunny-v1-baseline` tag. No major
+processor-architecture change is planned for this phase — the goal is
+to earn the "Speaker acceptable" and "Power architecture acceptable"
+gates above, plus general refinement. Primary V1.1 goals:
 
-- Continue speaker buzz/noise cleanup (see `docs/current/SPEAKER.md`'s
-  open hypotheses) toward the "Speaker acceptable" gate above.
-- Measure combined-load power behavior toward the "Power architecture
-  acceptable" gate above; evaluate a dedicated external motor supply.
-- Run the `ExpressiveMotion`/`BehaviorEngine` physical validation
-  checklists (`docs/current/KNOWN_LIMITATIONS.md`) — the largest
-  current software-vs-physical gap.
-- Refine LED effects/audio overlays as desired
-  (`docs/development/ADDING_LED_EFFECTS.md`/`ADDING_AUDIO_OVERLAYS.md`).
-- Refine motor choreography if desired
-  (`docs/playbooks/MUSIC_REACTIVE_MOTION_VALIDATION.md`).
-- General firmware cleanup/stability as issues surface.
+- Speaker buzz/static cleanup (see `docs/current/SPEAKER.md`'s open
+  hypotheses) toward the "Speaker acceptable" gate above.
+- Speaker normal-use volume refinement.
+- Continued LED BaseEffect refinement
+  (`docs/development/ADDING_LED_EFFECTS.md`).
+- Continued AudioOverlay refinement
+  (`docs/development/ADDING_AUDIO_OVERLAYS.md`).
+- Power/ground cleanup — measure combined-load power behavior toward
+  the "Power architecture acceptable" gate above; evaluate a dedicated
+  external motor supply.
+- Firmware stability/polish, including the `ExpressiveMotion`/
+  `BehaviorEngine` physical validation checklists
+  (`docs/current/KNOWN_LIMITATIONS.md`) — the largest current
+  software-vs-physical gap.
+- Motor behavior may be refined if desired
+  (`docs/playbooks/MUSIC_REACTIVE_MOTION_VALIDATION.md`), but motor
+  integration is already complete — this is polish, not new work.
 
 ## Sunny V1.2 — Raspberry Pi integration
 

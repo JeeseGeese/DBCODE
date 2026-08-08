@@ -3,9 +3,9 @@
 **Living document — always reflects the current active development state.** For the frozen snapshot captured at the Sunny V1 baseline (2026-08-07), see the matching file in `docs/V1/`. Update this file, not `docs/V1/`, when things change.
 
 Canonical living reference for the Sunny/sunflower-esp32-s3 animatronic
-sunflower. This currently mirrors the **Sunny V1** baseline (captured
-2026-08-07, frozen in `docs/V1/`); it will begin tracking Sunny V1.1
-once that phase starts (see `ROADMAP.md`). See `CURRENT_STATUS.md` for
+sunflower. Active development is currently on **Sunny V1.1**, building
+forward from the **Sunny V1** baseline (captured 2026-08-07, frozen in
+`docs/V1/`, tagged `sunny-v1-baseline`). See `CURRENT_STATUS.md` for
 the fastest current-state summary; this file and its siblings in
 `docs/current/` are the fuller living reference underneath it.
 

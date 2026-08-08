@@ -5,12 +5,15 @@ history dump. For detail, follow the links below. If you're reading
 this long after its last edit, verify anything load-bearing against
 `git log`/`git status` first.
 
-**Last updated:** 2026-08-07 — Sunny V1 baseline captured and frozen
-(`docs/V1/`). This is the current state of the project; `docs/current/`
-mirrors it and will begin tracking Sunny V1.1 once that phase starts
-(see `ROADMAP.md`). `docs/architecture/`, `docs/standards/`,
-`docs/lessons/`, `docs/playbooks/`, `archive/` also created this pass.
-No firmware behavior changed.
+**Last updated:** 2026-08-07 — Sunny V1 baseline captured, frozen
+(`docs/V1/`), and tagged (`sunny-v1-baseline`). **Active development is
+now Sunny V1.1** — speaker buzz/volume refinement, continued LED
+BaseEffect/AudioOverlay refinement, power/ground cleanup, and firmware
+stability/polish (motor integration is already complete). `docs/current/`
+tracks this active V1.1 work; `docs/V1/` stays frozen exactly as tagged.
+`docs/architecture/`, `docs/standards/`, `docs/lessons/`,
+`docs/playbooks/`, `archive/` were also created for the V1 baseline.
+No firmware behavior changed by this transition.
 
 ## What Sunny is
 
@@ -57,8 +60,8 @@ noise, automatic volume ladder, 32-bit-slot format A/B diagnostic).
   load under sustained use not physically measured. See
   [`docs/current/POWER.md`](docs/current/POWER.md).
 
-These are the two open decision gates that must pass before Sunny V1.1
-begins — see `ROADMAP.md`.
+Closing these is primary Sunny V1.1 work — see `ROADMAP.md` for the
+"Speaker acceptable" and "Power architecture acceptable" gates.
 
 ## Current speaker status
 
@@ -85,9 +88,10 @@ either, see [`docs/development/`](docs/development/).
 
 See [`ROADMAP.md`](ROADMAP.md) for the full milestone/decision-gate
 plan (V1.1 refinement → gates → V1.2 Raspberry Pi → V1.3 camera →
-V1.4 LLM/voice → V2.0 production). Immediate priorities: continue
+V1.4 LLM/voice → V2.0 production). Immediate V1.1 priorities: continue
 speaker buzz diagnosis and measure combined-load power behavior —
-these are the two open gates that must pass before Sunny V1.1 begins.
+closing these earns the "Speaker acceptable" and "Power architecture
+acceptable" gates ahead of V1.2.
 
 ## Canonical docs
 

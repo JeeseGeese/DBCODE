@@ -2,7 +2,27 @@
 
 ESP32-S3 firmware project driving a 58-pixel WS2812B-compatible addressable
 LED strip, controlled by four physical pushbuttons, with an INMP441 I2S
-microphone driving optional audio-reactive overlays.
+microphone driving optional audio-reactive overlays, a MAX98357A speaker,
+and a DRV8833-driven motor for expressive/music-reactive movement.
+
+## Where information lives
+
+This README is the narrative walkthrough and detailed command
+reference. For everything else, start here instead:
+
+| Need | Go to |
+|---|---|
+| Fastest current-state summary | [`CURRENT_STATUS.md`](CURRENT_STATUS.md) |
+| Living reference docs (always current) | [`docs/current/`](docs/current/) |
+| Frozen Sunny V1 baseline snapshot | [`docs/V1/`](docs/V1/) |
+| How the system is built and why (version-independent) | [`docs/architecture/`](docs/architecture/) |
+| Reusable bring-up SOPs | [`docs/playbooks/`](docs/playbooks/) |
+| Generalized engineering lessons | [`docs/lessons/`](docs/lessons/) |
+| Prescriptive engineering rules | [`docs/standards/`](docs/standards/) |
+| How to add an LED effect / audio overlay | [`docs/development/`](docs/development/) |
+| Minimal per-task reading list | [`docs/CLAUDE_CONTEXT_GUIDE.md`](docs/CLAUDE_CONTEXT_GUIDE.md) |
+| Roadmap / decision gates | [`ROADMAP.md`](ROADMAP.md) |
+| Historical bring-up logs (archived, not deleted) | [`archive/`](archive/) |
 
 ## v1.0.0 milestone
 
@@ -16,9 +36,11 @@ brownouts, watchdog failures, panics, or stuck motor states observed.
 
 Active development beyond this point happens on
 `feature/expressive-motion-v1` (branched from `v1.0.0`) — see
-[`docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`](../../docs/EXPRESSIVE_MOTION_DEVELOPMENT.md)
-for the expressive-motion architecture built on top of this baseline, and
-the "Expressive motion" section below for a summary.
+[`docs/current/EXPRESSIVE_MOTION.md`](docs/current/EXPRESSIVE_MOTION.md)
+for the current expressive-motion architecture (the original development
+narrative this was extracted from is archived at
+[`archive/superseded_docs/EXPRESSIVE_MOTION_DEVELOPMENT.md`](archive/superseded_docs/EXPRESSIVE_MOTION_DEVELOPMENT.md)),
+and the "Expressive motion" section below for a summary.
 
 ## Hardware
 
@@ -1776,11 +1798,21 @@ That diagnostic has been permanently removed, not just disabled.
    `SD` from GND to **3.3V**. Digital silence (not an idle/undriven line)
    is already being transmitted continuously at this point, so DIN never
    floats and the amplifier should stay quiet.
-4. Roughly 5 seconds after `loop()` begins running (i.e. after
-   `[SYSTEM] Ready`, since the lengthy pre-existing hardware bring-up
-   sequences run between the message above and `[SYSTEM] Ready`), one
-   automatic low-volume 2-second 440Hz test tone plays once, to confirm
-   output is working. It does not repeat automatically afterward.
+4. **No tone plays automatically** (corrected 2026-08-01 — an earlier
+   revision played one ~5 seconds after boot; that auto-demo is now
+   disabled by default, `ENABLE_SPEAKER_AUTO_DEMO_TONE=0` in
+   `include/Config.h`, as part of the Stage S1 speaker bring-up work —
+   see `docs/SPEAKER_BRINGUP_PLAN.md`). Sunny now stays speaker-silent
+   indefinitely until a human sends an explicit serial command.
+   **Complete every item in that plan's Stage S0 preflight checklist
+   first**, then send `speaker tone` (440Hz, 300ms, 5% amplitude) as the
+   recommended first physical sound test; `speaker stop` returns to
+   silence immediately. Once that's confirmed clean, `speaker t`/`1`/`2`/`3`
+   (440/220/440/880Hz, adjustable 2-25% volume via `speaker v`/`+`/`-`) are
+   a small gain/volume sweep bench for the same amplifier — see the table
+   below. The older `t`/`s`/`low`/`mid`/`high`/`sweep`/`melody`/`beep`/
+   `noise` tests remain available for later use. `loud` is explicitly
+   **not** the first test to run (see below).
 
 **Commands** (all Enter-terminated word commands — `t`/`s` used to be
 immediate no-Enter bytes in an earlier revision, but that collided with
@@ -1789,6 +1821,12 @@ any word command starting with the same letter, including the pre-existing
 
 | Command | Effect |
 |---|---|
+| `speaker tone` | **Stage S2 bring-up test — the recommended FIRST physical sound test** (see `docs/SPEAKER_BRINGUP_PLAN.md`). 440Hz, 300ms, 5% amplitude, fixed 16kHz sample rate. Prints frequency/amplitude/sample rate/duration before playing. Refuses if speaker init failed. Only complete this after every Stage S0 preflight checklist item is physically confirmed. |
+| `speaker stop` | immediately stops any speaker test/bench tone above and returns to digital silence |
+| `speaker t` / `1` / `2` / `3` | gain/volume bring-up bench: 440Hz/750ms, 220Hz/750ms, 440Hz/750ms, 880Hz/500ms respectively, all at the current bench volume (see `speaker v`/`+`/`-` below). 10-20ms fade in/out. Namespaced under `speaker` rather than bare `t`/`1`/`2`/`3` because those bytes are already reserved elsewhere — see `include/SpeakerTest.h`'s own comment on this bench for the full collision list, including that bare `1`/`2`/`3` are live, no-Enter motor-test triggers in `main.cpp`. |
+| `speaker v` | print the current bench volume (step index + percent) |
+| `speaker +` / `speaker -` | step the bench volume up/down through `2/5/8/12/18/25%` (default 5%); `+` caps at 25%, `-` caps at 2% — full-scale is never reachable |
+| `speaker h` | print this bench's own command list |
 | `t` | 440Hz sine, ~2s, ramped, ~7.5% amplitude (the original test tone) |
 | `s` | **[temporary diagnostic]** 440Hz square wave, ~2s, ramped, ~5% amplitude |
 | `low` / `mid` / `high` | sine at 150Hz / 440Hz / 1500Hz, 2s, ramped, ~10% amplitude |
@@ -1796,7 +1834,7 @@ any word command starting with the same letter, including the pre-existing
 | `melody` | C5 E5 G5 C6, 350ms/note + 100ms gap, played twice (~3.6s total) |
 | `beep` | 1000Hz, 150ms on / 150ms off, 5 repeats (~1.5s total) |
 | `noise` | white noise, 1s, ~5% amplitude |
-| `loud` | **[temporary diagnostic]** 1000Hz, 500ms, capped at 20% amplitude (never exceeded) — prints an explicit warning |
+| `loud` | **[temporary diagnostic — NOT the first test to run]** 1000Hz, 500ms, capped at 20% amplitude (never exceeded) — prints an explicit warning. Already internally bounded/safe (same non-blocking scheduler as every test here), but louder than the rest and gain/volume are not yet approved — use `speaker tone` first. |
 | `?` | includes `[I2S]` (shared-bus readiness, mode, pins, GPIO16 routing check) and `[SPEAKER]` status (ready state, phase, sample position, write-outcome counters) |
 
 **Procedural music player** (`music1`-`music4`, `stopmusic`) — generated
@@ -1846,8 +1884,10 @@ same conservative-amplitude philosophy: the 8Ω/0.5W speaker is driven by
 the MAX98357A amplifier (5V-supplied — see [Power](#power)), so nothing
 here exceeds 20% of full scale.
 Sample rate is 16kHz throughout, matching the microphone. No test
-auto-repeats; only its own command (or the one automatic `t`-equivalent
-demonstration play after boot) triggers it. Silence is transmitted
+auto-repeats and none play automatically — only its own explicit serial
+command triggers it (the previous automatic post-boot demonstration
+play is disabled by default as of 2026-08-01; see
+`ENABLE_SPEAKER_AUTO_DEMO_TONE` in `include/Config.h`). Silence is transmitted
 continuously the rest of the time — the I2S peripheral is never stopped —
 and `tx_desc_auto_clear` provides a hardware-level safety net (auto-fills
 zeros on any DMA underflow) so DIN can never carry garbage.
@@ -2339,9 +2379,12 @@ decision functions are instead exercised by standalone, deterministic,
 host-compiled g++ programs in `test_host/`, one file per
 feature/regression area, each independent (no shared build system, no
 Arduino dependency -- constants/enums/pure functions are mirrored inline
-in each file). As of Revision 10.1 there are 12 files:
+in each file). As of the Sunny V1 baseline there are 18 files (updated
+from the earlier 12 -- see `docs/V1/TESTING.md` for the full, current
+list with a one-line description of what each covers):
 
 ```
+audio_mode_button4_integration.cpp
 music_motor_choreography_dynamics.cpp
 music_motor_choreography_invariants.cpp
 music_motor_debug_diagnostics.cpp
@@ -2354,6 +2397,11 @@ music_motor_rotation_commitment.cpp
 music_motor_silence_rampdown.cpp
 music_motor_sustained_drive.cpp
 music_motor_sustained_drive_deadlock.cpp
+speaker_bench.cpp
+speaker_bringup.cpp
+speaker_fmt_diag.cpp
+speaker_multitone.cpp
+speaker_voltest.cpp
 ```
 
 Run the whole suite:
@@ -2367,7 +2415,7 @@ done
 ```
 
 Each file also documents its own single-file `g++ -std=c++17 ...` command
-in its header comment. All 12 must print `PASS: 0 failure(s)` (or the
+in its header comment. All 18 must print `PASS: 0 failure(s)` (or the
 file's own `All ... tests passed.` line) with zero compiler warnings
 before a build is considered clean.
 

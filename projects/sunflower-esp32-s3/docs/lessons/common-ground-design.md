@@ -23,10 +23,17 @@ the ESP32, regardless of which rail powers its VCC/VIN.
 ## How it was verified
 
 Consistently stated across every peripheral's wiring documentation
-(`docs/current/ELECTRICAL.md`) and never identified as a source of a
-problem in this project's bring-up history — the *absence* of ground-
-related symptoms is itself indirect confirmation the discipline has
-been followed correctly.
+(`docs/current/ELECTRICAL.md`). Directly confirmed as load-bearing
+during the V1.1 power/brownout investigation (2026-08-08): on the
+current solderless breadboard/Dupont prototype, **changing the
+MAX98357A's ground connection caused the WS2812 LEDs to display
+incorrect/chaotic colors** — a disturbed ground reference visibly
+corrupted the LED data signal (a single-wire, timing-sensitive
+protocol), not just amplifier noise. This is evidence the prototype has
+meaningful sensitivity to ground reference/return-path quality; it does
+**not** by itself prove the MAX98357A caused any observed brownout —
+see `docs/current/POWER.md`'s "Ground / breadboard / Dupont sensitivity"
+section for the full, deliberately separated writeup.
 
 ## Correct approach
 

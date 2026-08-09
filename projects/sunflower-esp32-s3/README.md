@@ -1,9 +1,11 @@
 # sunflower-esp32-s3
 
-ESP32-S3 firmware project driving a 58-pixel WS2812B-compatible addressable
-LED strip, controlled by four physical pushbuttons, with an INMP441 I2S
-microphone driving optional audio-reactive overlays, a MAX98357A speaker,
-and a DRV8833-driven motor for expressive/music-reactive movement.
+ESP32-S3 firmware project driving a 36-pixel WS2812B-compatible addressable
+LED strip (corrected 2026-08-08 from an earlier, incorrect 58 — see
+"Hardware" below), controlled by four physical pushbuttons, with an
+INMP441 I2S microphone driving optional audio-reactive overlays, a
+MAX98357A speaker, and a DRV8833-driven motor for expressive/music-reactive
+movement.
 
 ## Where information lives
 
@@ -47,7 +49,11 @@ and the "Expressive motion" section below for a summary.
 - **MCU:** ESP32-S3-WROOM module, N16R8 variant (16 MB flash, 8 MB octal PSRAM)
 - **Board:** generic ESP32-S3 devkit, USB-C, UART0 bridged to USB via an
   onboard WCH CH343 chip (not the ESP32-S3's native USB-OTG peripheral)
-- **LEDs:** 58x WS2812B-compatible addressable LEDs, single data line
+- **LEDs:** 36x WS2812B-compatible addressable LEDs (`NUM_LEDS=36`,
+  corrected 2026-08-08 — physically confirmed count; previously
+  incorrectly 58, and before that an unverified "42-LED assembly" theory —
+  see "42-LED assembly" section below and
+  `docs/lessons/verify-physical-led-count.md`), single data line
 - **Buttons:** 4x momentary pushbuttons, each wired between its GPIO pin
   and GND, using the ESP32's internal pull-up (no external resistors)
 - **Microphone:** 1x INMP441 I2S MEMS microphone
@@ -407,9 +413,21 @@ it. `NUM_LEDS` was therefore deliberately left at 58; see
 why driving more logical pixels than are physically present is safe.
 
 Row layout is recorded as lightweight metadata in `include/Config.h`
-(`LedRegion LED_ROW_1/2/3`, `PHYSICAL_LED_COUNT = 42`, plus boundary
+(`LedRegion LED_ROW_1/2/3`, `PHYSICAL_LED_COUNT`, plus boundary
 `static_assert`s) — it does not create a second NeoPixel object or alter
 any effect's output by itself.
+
+**Corrected 2026-08-08 (Sunny V1.1 LED-count audit):** the "42-LED
+assembly" theory above was never independently confirmed from this
+repository (as the original text already flagged) and is now known to
+be inconsistent with a direct physical count of 36 LEDs. `NUM_LEDS` is
+corrected to 36 (see `include/Config.h`); `PHYSICAL_LED_COUNT` now
+equals `NUM_LEDS` exactly (36), and the specific 10+10+22 row split
+above is left in place only as historical narrative — it does not
+describe the current `LED_ROW_1/2/3` values in `Config.h`, which are an
+explicitly-labeled unverified placeholder pending physical
+re-derivation via the `6`/`ledmap` diagnostic. See
+`docs/lessons/verify-physical-led-count.md`.
 
 `MotorPowerGuard` gained an experimental `MotorLedPowerMode` alongside its
 existing (default, unchanged) `FULL_MUTE` behavior:
@@ -709,7 +727,7 @@ starting values only, per `docs/DRV8833_MOTOR_BRINGUP.md`'s physically-proven
 | `3` | Aggressive breakaway test: jolt + 1500ms full drive, 2 cycles (see MOTOR BREAKAWAY above) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `4` | Cycle the experimental `DIM_DURING_MOTION` test brightness level: `0, 4, 8, 12, 16` *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `5` | Experimental motor+dim-LED coexistence test: Preparing → dim LEDs active → Forward 250ms → Stop → Reverse 250ms → Stop → Restoring → Complete, at the level selected via `4`. `k` cancellation was found to be intermittent (~50%) here, root-caused to a two-consumer serial race, and fixed — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21 for the full writeup and validation (10/10 FORWARD, 10/10 REVERSE, plus edge cases) *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
-| `6` | LED index mapping tool (revised — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21). Phase A: color test (red/green/blue, ~1s each, all 42 LEDs). Phase B: interactive single-index walk starting at 0 — `n`/`p` step, `j` jumps +10, `r` restarts at 0, `x` exits, `k` cancels. Phase C (`c` from within Phase B): optional candidate-row check, clearly labeled as unconfirmed. Neither the physical row mapping nor the color order is claimed as confirmed — the tool only makes them observable *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
+| `6` | LED index mapping tool (revised — see `docs/DRV8833_MOTOR_BRINGUP.md` section 21). Phase A: color test (red/green/blue, ~1s each, all 36 LEDs). Phase B: interactive single-index walk starting at 0 — `n`/`p` step, `j` jumps +10, `r` restarts at 0, `x` exits, `k` cancels. Phase C (`c` from within Phase B): optional candidate-row check, clearly labeled as unconfirmed. Neither the physical row mapping nor the color order is claimed as confirmed — the tool only makes them observable *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `7` | Toggle continuous audio serial output (the periodic `[AUDIO]` heartbeat and mic fault warnings) — default **off**. Does not affect microphone sampling, audio-reactive LEDs, or on-demand dumps (`d`/`status`) — see `docs/DRV8833_MOTOR_BRINGUP.md` section 22 *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 | `?` | Print `MotorBehavior` mode/phase, `MotorPowerGuard`/`MotorLedPowerMode` state, `MotorPriorityMode` state + LED/audio-suspended flags, the priority/breakaway/motor+LED/LED-map tests' active/phase state, and audio processing/overlay/log-enabled status *(requires `ENABLE_MOTOR_BEHAVIOR_TEST`)* |
 
@@ -2084,7 +2102,7 @@ automatically rotates through the other 8 real base effects for you.
   rendered into one buffer, the incoming effect into a second buffer, and
   the two are blended per-pixel over the transition window (not a
   simpler fade-to-black-and-back; the project's RAM budget comfortably
-  supports two extra 58-LED buffers).
+  supports two extra 36-LED buffers).
 - **Rotation list:** derived automatically from effect ordering
   (`NUM_REAL_BASE_EFFECTS` in `LedEffects.h` = every enum value before
   `AUTO_SHOWCASE` itself), not a manually-duplicated list, so it can never
@@ -2347,16 +2365,18 @@ LED_IDLE_MA_PER_LED    1      assumed per-LED quiescent current
 ```
 
 Each frame, `main.cpp`'s `applyPowerLimit()` estimates current as
-`NUM_LEDS * LED_IDLE_MA_PER_LED + (sum of all R+G+B values across all 58
-LEDs) * LED_MAX_MA_PER_CHANNEL / 255`, and scales the whole frame down
-proportionally if that exceeds `LED_CURRENT_LIMIT_MA`, printing a
+`NUM_LEDS * LED_IDLE_MA_PER_LED + (sum of all R+G+B values across all
+NUM_LEDS LEDs) * LED_MAX_MA_PER_CHANNEL / 255`, and scales the whole frame
+down proportionally if that exceeds `LED_CURRENT_LIMIT_MA`, printing a
 throttled `[POWER]` warning (at most once every 2 seconds) when it does.
+`NUM_LEDS` is 36 as of the 2026-08-08 LED-count correction (was 58) --
+see `docs/lessons/verify-physical-led-count.md`.
 
 **This is a software estimate for bring-up safety, not a substitute for
 correct electrical power design.** It cannot protect against a supply
 that's undersized for the LEDs' physical maximum draw, and the per-channel
 current assumption is a standard approximation, not a measurement of your
-specific LEDs. Do not power the 58-LED strip from the ESP32's 3V3 pin;
+specific LEDs. Do not power the 36-LED strip from the ESP32's 3V3 pin;
 see the safety warnings section below.
 
 **Overlay additive-blending safety (richer overlays, this revision):**
@@ -2498,8 +2518,8 @@ All constants below are in `include/Config.h`.
 
 ## Safety warnings
 
-- **Do not power the 58-LED strip from the ESP32's 3V3 pin.** At even modest
-  brightness, 58 WS2812B LEDs can draw more current than the ESP32's onboard
+- **Do not power the 36-LED strip from the ESP32's 3V3 pin.** At even modest
+  brightness, 36 WS2812B LEDs can draw more current than the ESP32's onboard
   3.3V regulator is rated for. GPIO4 provides a **3.3V data signal only** —
   it does not and must not supply LED power.
 - **Use a suitable external power supply for the LED strip**, sized for the

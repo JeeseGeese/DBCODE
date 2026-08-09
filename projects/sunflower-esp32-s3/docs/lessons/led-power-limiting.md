@@ -45,6 +45,22 @@ on it for anything beyond bring-up.
 - Never validating the per-channel current constants against the
   actual installed LEDs, which can vary between WS2812-compatible
   parts.
+- **Diagnostic/startup/hardware-test code bypassing the same
+  power-safety path production rendering uses, "because it's just a
+  test."** Found in this project (2026-08-08, V1.1 power investigation):
+  `HardwareTest.cpp`'s boot-time HWTEST sequence wrote raw, unscaled
+  `255,255,255` SOLID WHITE frames directly to the strip, skipping both
+  normal brightness scaling and `applyPowerLimit()` entirely — an
+  estimated ~2196mA unprotected current command at boot (at the
+  corrected 36-LED count), and a plausible contributor to a reset-loop/
+  stuck-white-LED debugging incident during that investigation (see
+  `docs/current/POWER.md`'s "HWTEST power-safety bug" section). Fixed by
+  routing every HWTEST frame through the SAME `applyPowerLimit()`
+  function normal rendering uses, and physically verified afterward
+  (`[POWER] Throttling: estimated 2196mA exceeds 1000mA limit, scaling
+  by 0.46`). **General rule: test/diagnostic/startup code paths must use
+  the same production power-safety mechanisms as normal operation, not a
+  separate unprotected path.**
 
 ## Applies to future projects?
 
@@ -53,5 +69,5 @@ dedicated current-sense hardware.
 
 ## Related Sunny files
 
-`src/main.cpp` (`applyPowerLimit()`), `include/Config.h`,
-`docs/current/POWER.md`.
+`src/main.cpp` (`applyPowerLimit()`), `src/HardwareTest.cpp`,
+`include/Config.h`, `docs/current/POWER.md`.

@@ -58,158 +58,132 @@ deleting the field — a missing field reads as "forgotten," not
 
 ## Current entry
 
-**Session date:** 2026-07-30 (checkpoint pass, same calendar day as the
-infrastructure session below)
+**Session date:** 2026-08-08 (final V1.1 validation/checkpoint-prep
+pass — the fourth and last V1.1 session today; see
+`docs/current/V1_1_STATUS.md` for the full accomplishment list across
+all four)
 
-**Current objective:** Resolve the previously-flagged uncommitted
-working-tree gap by committing the existing implementation and test work
-as one honest engineering checkpoint, then commit the AI infrastructure
-separately. This was a git-history/documentation task, not new firmware
-development — no source file's logic was modified to make this checkpoint
-happen; the code was committed as-is.
+**Current objective (this pass, updated):** Physical validation was
+run by the user on battery power and **approved** — see
+`docs/current/V1_1_STATUS.md`'s "Physical validation result" section
+for exactly what was confirmed (boot/buttons/LEDs/overlay/mic/motor/
+speaker/combined-system, no brownout). **Sunny V1.1 is now COMPLETE.**
+Status docs (`V1_1_STATUS.md`, `CURRENT_STATUS.md`, `OVERVIEW.md`,
+`ROADMAP.md`) have been updated accordingly.
 
-**Current branch:** `feature/expressive-motion-v1`
+**Checkpoint commit/tag/push status: IN PROGRESS, not finished as of
+this entry.** Before staging, a working-tree audit found
+`platformio.ini` modified **outside any V1.1 session** — it now
+includes `lvgl/lvgl@^9.5.0` in `lib_deps` (a V1.2 touchscreen-UI
+library) and has had its explanatory comments stripped/reformatted
+(consistent with a PlatformIO IDE auto-format, not a manual edit by any
+AI session this project has record of). This is flagged as an
+ambiguous/out-of-scope file for the V1.1 commit and excluded pending
+the user's decision — **do not assume it's been resolved one way or
+the other; check `git status`/`git diff platformio.ini` and this file's
+own latest state before continuing the checkpoint.**
 
-**Current commit (engineering checkpoint):** `64e8aee` — "feat: checkpoint
-Sunny motor and audio development through MusicMotor Rev 10.1"
-(2026-07-30). This is followed by a second, documentation-only commit
-(see below) that this file itself is part of.
+**Working tree audit this pass:** all uncommitted changes classified —
+speaker/audio refinement, 36-LED correction, HWTEST power-safety fix,
+power/brownout documentation, tests, and context/handoff/roadmap docs.
+**No ambiguous or unrelated changes found** — the one untracked file
+outside this classification (`.gitignore`) predates all four sessions
+and is an ordinary `.pio`/`.vscode` ignore file, not V1.1 work.
 
-**The working-tree gap flagged in the previous entry is now resolved.**
-Everything previously listed as uncommitted — `MotorPwmCalibration`,
-`DanceEngine`, `SharedI2S`, `SpeakerTest`, `MusicMotorController` through
-Revision 10.1, `HardwareTest`, `MicRetest`, and all 12
-`test_host/music_motor_*.cpp` regression files, plus the `MotorDriver` PWM
-primitives, the `AudioAnalyzer` migration to `SharedI2S`, and the
-associated `Config.h`/`Controls.cpp`/`main.cpp`/`.gitignore` changes — is
-now committed at `64e8aee`. `git log`/`git show` for this project can now
-be trusted for this content; the previous entry's warning to distrust
-`git log` no longer applies as of this commit.
+**Roadmap re-sequenced this pass:** V1.2 is now **touchscreen/UI**
+(previously undefined at this slot); Raspberry Pi moved to V1.3; camera
+to V1.4; LLM/voice to V1.5. See `ROADMAP.md`. `docs/CLAUDE_CONTEXT_GUIDE.md`
+gained a "Touchscreen/UI work (V1.2)" minimal-read-set section so the
+next session doesn't need to load V1.1's debugging history to start UI
+work.
 
-**Committed as one checkpoint, not reconstructed feature-by-feature.**
-None of the above was actually committed incrementally as it was built —
-there was no real per-feature commit history to recover. A prior session
-proposed a 7-commit feature-by-feature split; the user explicitly chose a
-two-commit grouping instead (implementation+tests, then documentation) to
-preserve truthful checkpoint history rather than manufacture history that
-never existed. See `64e8aee`'s commit message for the full rationale and
-contents list.
+**Current branch:** `feature/expressive-motion-v1` (unchanged).
 
-**Two temporary, self-labeled diagnostics remain intentionally present**
-in the committed code (not removed, not hidden):
+**Working tree status:** NOT committed — accumulated uncommitted
+changes across all four of today's V1.1 sessions (speaker sprint + LED
+correction + power/brownout documentation + this validation pass). Run
+`git status`/`git diff` before assuming what's in the tree.
+**Do not commit/tag/push without the user's explicit approval of the
+physical validation results** — that gate has not been passed yet as
+of this entry.
 
-- `AudioAnalyzer.cpp`'s boot-time I2S RX trace, bounded to `Config.h`'s
-  `MIC_RX_TRACE_CALL_COUNT = 5` calls — proves the `MIC_I2S_SLOT_INDEX`
-  choice against real captured hardware data.
-- `SpeakerTest`'s `'loud'` command — explicitly labeled "TEMPORARY
-  DIAGNOSTIC ONLY" at its definition site.
+**Tests/build performed this pass:**
+- Full host suite: **20/20 `test_host/*.cpp` files present, compiled,
+  and passing, 0 warnings** (verified fresh this pass, not assumed from
+  an earlier session).
+- Clean build (`pio run -t clean && pio run`): **SUCCESS**, 0
+  project-source warnings (only the pre-existing, documented
+  `ARDUINO_USB_MODE redefined` framework notices), RAM 7.0%
+  (23048/327680 bytes), Flash 7.0% (456341/6553600 bytes).
+- No upload was performed this pass (no source changed, nothing new to
+  flash) — the currently-flashed firmware is from the LED-count
+  session earlier today.
 
-Also still present and unchanged: `HardwareTest` and `MicRetest`
-(each documents its own full removal instructions in its own header) and
-the ~30-40s blocking boot sequence they cause — see
-`projects/sunflower-esp32-s3/AGENTS.md` section 12.
-
-**Files touched this checkpoint pass:**
-
-- Commit `64e8aee`: all 34 files listed in that commit's own message
-  (implementation + `test_host/`) — no new content authored this pass,
-  the files were already present in the working tree from prior sessions
-  and were committed as-is.
-- This documentation commit (in progress as this entry is written):
-  `README.md` (unmodified content, just newly committed),
-  `/AGENTS.md`, `/CLAUDE.md`, `/docs/AI_HANDOFF.md` (this file, edited),
-  `/projects/sunflower-esp32-s3/AGENTS.md`,
-  `/projects/sunflower-esp32-s3/CURRENT_STATUS.md` (edited),
-  `/projects/sunflower-esp32-s3/ROADMAP.md` (edited).
-
-**Tests performed tonight, exact results:**
-
-- Full `test_host/` suite, all 12 files, `g++ -std=c++17 -Wall -Wextra`:
-  **12/12 passed, 0 compiler warnings, 0 runtime failures.**
-- Clean PlatformIO build (`pio run -t clean && pio run`,
-  `env:esp32-s3-devkitc-1`): **SUCCESS**, 0 project-source warnings (only
-  the pre-existing, already-documented `ARDUINO_USB_MODE redefined`
-  framework notices), RAM 7.2% (23432/327680 bytes), Flash 6.8%
-  (445017/6553600 bytes).
-
-**Hardware testing performed: none.** No hardware was connected or
-operated during this checkpoint pass. This commit and this entry make no
-physical-validation claim beyond what was already physically observed and
-documented in prior sessions — see `README.md` and
-`docs/DRV8833_MOTOR_BRINGUP.md` for that existing history, which is
-unchanged by tonight's work.
+**Hardware testing performed this pass: none** — this was a
+verification/documentation pass, not a physical-hardware session. See
+`docs/current/V1_1_STATUS.md`'s exit-criteria table for exactly which
+items are already physically verified (from earlier sessions) vs.
+still need the checklist run.
 
 **Outstanding issues:**
 
-- None newly introduced by this checkpoint. The working-tree/git-history
-  gap that was the top outstanding issue in the previous entry is
-  resolved as of `64e8aee`.
-- This documentation set still has not been used by a second AI session
-  to confirm it's sufficient for cold-start orientation in practice —
-  carried forward from the previous entry, still open.
+- The V1.1 physical validation checklist has not been run yet — this
+  is the actual remaining gate, not a code or documentation gap.
+- Residual speaker buzz/static remains unresolved and unproven (accepted
+  V1.1 limitation, not a blocker — see `docs/current/V1_1_STATUS.md`).
+- Electrical brownout root cause remains not formally closed (accepted
+  V1.1 limitation, not a blocker — same doc).
 
-**Recommended next task:** **Speaker debugging** — physical audio-quality
-validation of the MAX98357A output (volume, clarity) beyond the current
-write-path-only verification. This is the explicitly stated next planned
-objective as of this checkpoint. See
-`projects/sunflower-esp32-s3/CURRENT_STATUS.md` and `ROADMAP.md` for the
-fuller priority list (physical validation of `ExpressiveMotion`/
-`BehaviorEngine` remains open too, and isn't superseded by the speaker
-work — both are legitimate next steps, speaker debugging is simply what
-was named for immediately next).
+**Recommended next task:** Run the physical validation checklist
+(`docs/current/TESTING.md`) on battery power and report results back,
+per-step, not as a single pass/fail. On approval: V1.1 checkpoint
+commit/tag/push, then V1.2 touchscreen/UI work can begin (hardware
+selection first — see `ROADMAP.md`'s V1.2 section).
 
 **Commands to resume:**
 
 ```bash
 cd ~/DOBETTERCODE/DBCODE
-git status                     # should be clean as of this checkpoint
-git log --oneline --decorate -5
+git status                     # working tree has accumulated uncommitted changes
 cd projects/sunflower-esp32-s3
 export PATH="$HOME/.platformio/penv/bin:$PATH"
 pio run                        # confirm it still builds
 cd test_host && for f in *.cpp; do n="${f%.cpp}"; g++ -std=c++17 -Wall -Wextra -o "/tmp/$n" "$f" && "/tmp/$n"; done
+pio device list                # confirm port before any upload -- don't assume it's still whatever it was last session
 ```
-
-See `projects/sunflower-esp32-s3/AGENTS.md` for upload/monitor/test
-commands, and its "Speaker hardware test" cross-reference (README.md) for
-the required MAX98357A startup safety sequence before beginning speaker
-debugging on real hardware.
 
 **Known risks:**
 
-- The motor (DRV8833), LED strip, and (in development) the MAX98357A
-  amplifier currently share one 5V rail (corrected 2026-08-01 — this
-  bullet previously and incorrectly said the ESP32's 3.3V rail; only
-  the INMP441 microphone runs from 3.3V), with known,
-  physically-observed motor/LED contention — see that project's
-  `AGENTS.md` for the electrical constraints. Any firmware change that
-  increases simultaneous motor+LED+amplifier current draw should be
-  treated as physically risky until re-validated.
+- The motor (DRV8833), LED strip, and MAX98357A amplifier share one 5V
+  rail; only the INMP441 microphone runs from 3.3V. The new, louder
+  default speaker volume (70% vs. the old 5% bring-up default) draws
+  meaningfully more amplifier current than before.
 - No current-sensing or thermal-monitoring hardware exists on this
-  project — over-current, stall, and thermal conditions cannot be
-  detected in software, only avoided by conservative timing/duty limits.
-- Speaker debugging (the next planned objective) involves an amplifier
-  and a physical speaker for the first time — read the full startup
-  safety sequence in `README.md`'s "Speaker hardware test" section
-  (keep MAX98357A `SD` at GND until `[SPEAKER] Digital silence active`
-  prints) before connecting anything.
+  project.
+- `speaker isolate on` commands the motor stopped once but does not
+  prevent an independently-active motor behavior from re-engaging it —
+  not a safety interlock.
+- The prototype is still solderless breadboard/Dupont wiring — see
+  `docs/lessons/breadboard-prototype-transient-load-risk.md`.
 
 **Anything the next AI absolutely must know:**
 
 1. This repository (and the sunflower project specifically) is **not
-   complete** — do not write or imply otherwise anywhere, including in
-   casual chat responses to the user. Tonight's work was a checkpoint,
-   not a release.
-2. Read `/AGENTS.md` section 6 (physical validation policy) before
-   writing any status claim about hardware behavior. It is the most
-   commonly violated rule in embedded-project documentation generally,
-   and this repository is explicit about not tolerating it. This
-   checkpoint pass involved zero hardware — do not let the large commit
-   size imply otherwise.
-3. `git log`/`git show` are trustworthy again for this project as of
-   `64e8aee` — the previous entry's warning about the working tree not
-   matching history no longer applies. Verify with `git status`/`git log`
-   before assuming this is still true, as always.
-4. Nothing has been pushed, tagged-and-pushed, or uploaded to hardware.
-   Everything from this checkpoint pass is local only unless a later
-   session/entry says otherwise.
+   complete** — V1.1 is "ready for validation," not "complete," until
+   the user runs the physical checklist and approves. Do not write or
+   imply V1.1 is done before that happens.
+2. **Do not commit, tag, or push** until the user explicitly approves
+   the physical validation results — this is an explicit gate from the
+   user's own instructions this session, not a general caution.
+3. Read `/AGENTS.md` section 6 (physical validation policy) and
+   `docs/current/V1_1_STATUS.md`'s exit-criteria table before writing
+   any status claim about V1.1 — it already distinguishes
+   verified/physically-observed/accepted-limitation per criterion;
+   don't collapse that back into a single "done" claim.
+4. V1.2 is now **touchscreen/UI**, not Raspberry Pi — if a future
+   session's instructions still say "V1.2 = Raspberry Pi," the roadmap
+   has since been corrected; trust `ROADMAP.md`/`CURRENT_STATUS.md`
+   over a stale instruction.
+5. Nothing was committed, pushed, or tagged today (any of the four
+   sessions). The working tree has real uncommitted changes as of this
+   entry.

@@ -3,9 +3,11 @@
 **Living document — always reflects the current active development state.** For the frozen snapshot captured at the Sunny V1 baseline (2026-08-07), see the matching file in `docs/V1/`. Update this file, not `docs/V1/`, when things change.
 
 Canonical living reference for the Sunny/sunflower-esp32-s3 animatronic
-sunflower. Active development is currently on **Sunny V1.1**, building
-forward from the **Sunny V1** baseline (captured 2026-08-07, frozen in
-`docs/V1/`, tagged `sunny-v1-baseline`). See `CURRENT_STATUS.md` for
+sunflower. **Sunny V1.1 is complete** (physically validated
+2026-08-08 — see `docs/current/V1_1_STATUS.md`), building forward from
+the **Sunny V1** baseline (captured 2026-08-07, frozen in `docs/V1/`,
+tagged `sunny-v1-baseline`). Active development now begins **Sunny
+V1.2 — touchscreen/UI** (see `ROADMAP.md`). See `CURRENT_STATUS.md` for
 the fastest current-state summary; this file and its siblings in
 `docs/current/` are the fuller living reference underneath it.
 
@@ -23,8 +25,10 @@ expressive movement — including music-reactive dancing
 
 - ESP32-S3-WROOM (N16R8) platform, single firmware image, Arduino
   framework via PlatformIO.
-- 58x WS2812-compatible LEDs, 8 base effects + automatic showcase
-  rotation, 8 audio-reactive overlays layered independently on top.
+- 36x WS2812-compatible LEDs (corrected 2026-08-08, physically
+  confirmed; was 58 — see `docs/lessons/verify-physical-led-count.md`),
+  8 base effects + automatic showcase rotation, 8 audio-reactive
+  overlays layered independently on top.
 - INMP441 I2S microphone, feature extraction (RMS/envelope/bass proxy/
   transient/clap detection).
 - MAX98357A I2S amplifier + a 40mm/4Ω/3W speaker, sharing one
@@ -38,7 +42,7 @@ expressive movement — including music-reactive dancing
 - Four physical buttons (Mode, Mute, Brightness, Button4/Audio).
 - Centralized, single-owner serial command dispatcher with a reliable
   `k` emergency stop reachable from every subsystem.
-- 18 host-side (`test_host/`) regression tests covering
+- 20 host-side (`test_host/`) regression tests covering
   `MusicMotorController` decision logic, the unified Audio Mode/Button4
   integration, and the speaker bring-up/bench/format/multitone/
   volume-ladder test suites.
@@ -78,8 +82,9 @@ expressive movement — including music-reactive dancing
 | `MOTOR.md` | DRV8833 + MotorDriver + PWM + MusicMotorController |
 | `EXPRESSIVE_MOTION.md` | ExpressiveMotion + BehaviorEngine |
 | `SOFTWARE_ARCHITECTURE.md` | Module map, ownership rules, render/loop structure |
-| `TESTING.md` | Host tests, physical test procedure |
+| `TESTING.md` | Host tests, physical test procedure, V1.1 closure validation checklist |
 | `KNOWN_LIMITATIONS.md` | What's software-validated only, what's unresolved |
+| `V1_1_STATUS.md` | Sunny V1.1 closure status, exit criteria, accomplishments, explicitly-not-claimed items |
 
 For point-in-time material (what changed to reach V1, a git-history
 timeline, the versioning strategy), see `docs/V1/RELEASE_NOTES.md`/

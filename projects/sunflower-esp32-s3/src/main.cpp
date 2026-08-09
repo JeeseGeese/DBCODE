@@ -26,6 +26,7 @@
 #include "MusicMotorController.h"
 #include "SharedI2S.h"
 #include "SpeakerTest.h"
+#include <esp_system.h>
 
 // Temporary test-only serial interface for MotorBehavior (Task 5 of the
 // motor bring-up plan, see docs/DRV8833_MOTOR_BRINGUP.md section 13). Set
@@ -51,8 +52,17 @@ static unsigned long lastFpsReportTime = 0;
 // Estimates this frame's LED current draw and scales the buffer down in
 // place if it exceeds LED_CURRENT_LIMIT_MA. This is a software estimate
 // only (see Config.h) -- it does not replace correct electrical power
-// design for the strip's actual supply.
-static void applyPowerLimit(RGB8 *buf) {
+// design for the strip's actual supply. Iterates buf[0..NUM_LEDS) of
+// ACTUAL composed pixel values (post-effect, post-overlay, post-brightness
+// when called from loop() below) -- not a flat worst-case assumption.
+//
+// Not `static` as of the 2026-08-08 HWTEST power-safety fix: HardwareTest.cpp
+// calls this SAME function (via an `extern` declaration, documented cross-
+// file coupling for one function, the same lightweight-coupling pattern
+// already used for g_measuredFps above) so the boot-time hardware test uses
+// the identical current-limiting path as normal rendering, rather than a
+// second implementation that could silently drift from this one.
+void applyPowerLimit(RGB8 *buf) {
   uint32_t channelSum = 0;
   for (int i = 0; i < NUM_LEDS; i++) channelSum += (uint32_t)buf[i].r + buf[i].g + buf[i].b;
 
@@ -82,6 +92,36 @@ void setup() {
   delay(300); // brief startup delay so a host-side terminal can attach
 
   Serial.println(F("[SYSTEM] Sunflower LED controller starting"));
+  // V1.1 power/brownout observability (see docs/current/POWER.md) --
+  // esp_reset_reason() is a standard, read-only ESP-IDF call; this only
+  // reports the reason the ROM bootloader already determined before Serial
+  // was available, it does not change reset/brownout behavior in any way.
+  // The ROM bootloader's own "rst:0x.. (BROWNOUT_RST)" line (printed before
+  // this firmware's Serial.begin()) remains the earliest available signal;
+  // this line makes the same fact visible AFTER Serial is up, in every
+  // captured log, without needing the raw ROM boot text.
+  {
+    esp_reset_reason_t resetReason = esp_reset_reason();
+    const char *resetReasonName;
+    switch (resetReason) {
+      case ESP_RST_POWERON: resetReasonName = "POWERON"; break;
+      case ESP_RST_EXT: resetReasonName = "EXT"; break;
+      case ESP_RST_SW: resetReasonName = "SW (esp_restart)"; break;
+      case ESP_RST_PANIC: resetReasonName = "PANIC"; break;
+      case ESP_RST_INT_WDT: resetReasonName = "INT_WDT"; break;
+      case ESP_RST_TASK_WDT: resetReasonName = "TASK_WDT"; break;
+      case ESP_RST_WDT: resetReasonName = "WDT"; break;
+      case ESP_RST_DEEPSLEEP: resetReasonName = "DEEPSLEEP"; break;
+      case ESP_RST_BROWNOUT: resetReasonName = "BROWNOUT"; break;
+      case ESP_RST_SDIO: resetReasonName = "SDIO"; break;
+      case ESP_RST_UNKNOWN:
+      default: resetReasonName = "UNKNOWN"; break;
+    }
+    Serial.printf("[SYSTEM] Reset reason: %s (%d)\n", resetReasonName, (int)resetReason);
+    if (resetReason == ESP_RST_BROWNOUT) {
+      Serial.println(F("[SYSTEM] WARNING: this boot followed a brownout reset"));
+    }
+  }
   // Revision 9 -- printed once at every boot so a captured serial log can
   // always be matched back to the exact firmware that produced it (see
   // Config.h's "Firmware identity" comment -- added after a physical-test

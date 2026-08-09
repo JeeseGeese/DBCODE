@@ -26,6 +26,23 @@ Direct physical A/B: LED behavior differs measurably between
 "LEDs muted during motor engagement" and "LEDs active during motor
 engagement," repeatably.
 
+**Escalated during the V1.1 power/brownout investigation (2026-08-08):**
+the most reproducible brownout (`BROWNOUT_RST` / `[SYSTEM] Reset reason:
+BROWNOUT (9)`) condition found involved high LED load combined with
+active `MusicMotorController` movement, especially aggressive
+transitions near M100 and high-load direction reversals (e.g. a
+drop-phrase `direction=REVERSE target=M100 punch=1` step). This is
+documented as a **hypothesis, not a proven root cause** — motor
+reversals under LED load are a plausible way an existing marginal
+supply/distribution path gets exposed severely enough to trip the
+brownout detector, but no single-variable test has isolated exactly
+which combination is necessary vs. sufficient, and a separate,
+currently-leading hypothesis (incoming source-power capability —
+computer USB vs. battery pack) has since emerged as at least as
+significant. See `docs/current/POWER.md`'s "Current brownout
+investigation" section for the full, deliberately-separated writeup —
+do not treat motor reversals as a confirmed standalone cause.
+
 ## Correct approach
 
 The only real fix is a dedicated external motor power supply,

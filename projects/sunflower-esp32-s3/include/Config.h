@@ -35,41 +35,56 @@
 // Hardware pin map (verified)
 // ============================================================================
 #define LED_PIN 4
-#define NUM_LEDS 58
+// CORRECTED 2026-08-08 (Sunny V1.1 LED-count audit): Sunny physically has
+// 36 WS2812-compatible LEDs, confirmed by direct physical count. This
+// firmware previously carried NUM_LEDS=58 (a V1-era value; see docs/V1/ for
+// the frozen historical record of what the firmware reported at that tag)
+// and, before that, a documented-but-unconfirmed "42-LED assembly" theory
+// (see the retired LED_ROW_1/2/3 block below) -- neither was an
+// independently-verified physical count. 36 is the current, physically
+// confirmed value; NUM_LEDS is the single source of truth every render
+// loop, buffer, and the power estimator already read from (see
+// docs/current/LED_ENGINE.md and docs/current/SPEAKER.md's sibling lesson
+// in docs/lessons/ for why raising NUM_LEDS above the true physical count
+// is harmless but UNDER-counting the power estimate is not -- see
+// applyPowerLimit() in main.cpp).
+#define NUM_LEDS 36
 
 // ============================================================================
-// 42-LED row assembly metadata
+// LED row/region metadata for the 'ledmap' ('6') diagnostic tool
 // ============================================================================
-// A 42-LED WS2812 assembly (3 daisy-chained rows: 10 + 10 + 22) has been
-// physically connected on the same GPIO4/strip object as the existing
-// NUM_LEDS=58 strip above. It has been observed working correctly with the
-// current firmware as-is -- existing modes, effects, brightness, and mute
-// behavior all display properly on it with no code changes, no indexing
-// failures, and no corrupted output. NUM_LEDS is therefore left at 58
-// (unchanged) rather than being replaced with 42: whether the physical
-// strip is actually 42, 58, or something else connected downstream has not
-// been independently confirmed from the repository, and driving more
-// pixels than are physically present is standard, harmless WS2812 behavior
-// (the extra data simply has no LED left in the chain to land on). These
-// constants are metadata only, describing the first 42 logical pixels of
-// the existing strip -- they do not change NUM_LEDS, do not create a
-// second NeoPixel object, and do not alter any effect's output by
-// themselves.
+// Previously described a "42-LED assembly (3 rows: 10+10+22)" theory that
+// predates the 2026-08-08 physical LED-count audit above and is now known
+// to be inconsistent with the confirmed 36-LED count (10+10+22=42 != 36).
+// That row breakdown was never independently verified in the first place
+// (see git history for the original wording) -- it was always metadata for
+// a human to visually confirm via the 'ledmap' tool, not a verified fact.
+// PHYSICAL_LED_COUNT is retired as a concept distinct from NUM_LEDS: the
+// physical count is now confirmed to equal NUM_LEDS exactly (36), so there
+// is no longer a "logical vs. physical" gap to track. The three-row split
+// below is left ONLY as an unverified placeholder so the 'ledmap' tool's
+// existing per-row dim-check still compiles and runs -- it is NOT a
+// confirmed physical row layout. Re-derive the real boundaries by running
+// 'ledmap' and watching where the lit LEDs actually fall; update this block
+// once that's done, rather than trusting these numbers.
 struct LedRegion {
   uint16_t start;
   uint16_t count;
 };
 
-constexpr LedRegion LED_ROW_1{0, 10};
-constexpr LedRegion LED_ROW_2{10, 10};
-constexpr LedRegion LED_ROW_3{20, 22};
-constexpr uint16_t PHYSICAL_LED_COUNT = 42;
+// UNVERIFIED PLACEHOLDER split (equal thirds of 36) -- see comment above.
+constexpr LedRegion LED_ROW_1{0, 12};
+constexpr LedRegion LED_ROW_2{12, 12};
+constexpr LedRegion LED_ROW_3{24, 12};
+constexpr uint16_t PHYSICAL_LED_COUNT = 36;
 
 static_assert(LED_ROW_1.start + LED_ROW_1.count == LED_ROW_2.start, "Row 1 must end exactly where Row 2 begins");
 static_assert(LED_ROW_2.start + LED_ROW_2.count == LED_ROW_3.start, "Row 2 must end exactly where Row 3 begins");
 static_assert(LED_ROW_3.start + LED_ROW_3.count == PHYSICAL_LED_COUNT, "Row 3 must end exactly at PHYSICAL_LED_COUNT");
 static_assert(PHYSICAL_LED_COUNT <= NUM_LEDS,
               "PHYSICAL_LED_COUNT must fit within NUM_LEDS -- row indices address the existing strip object");
+static_assert(PHYSICAL_LED_COUNT == NUM_LEDS,
+              "As of the 2026-08-08 correction, the physical LED count is confirmed to equal NUM_LEDS exactly");
 
 #define BUTTON_MODE_PIN 10
 #define BUTTON_MUTE_PIN 11
@@ -1795,14 +1810,33 @@ constexpr SpeakerBenchPreset SPEAKER_BENCH_PRESETS[] = {
 };
 constexpr uint8_t SPEAKER_BENCH_PRESET_COUNT = sizeof(SPEAKER_BENCH_PRESETS) / sizeof(SPEAKER_BENCH_PRESETS[0]);
 
-// Conservative amplitude ladder for 'speaker +'/'speaker -'/'speaker v' --
-// full-scale (1.0) is never reachable by design; 25% is the ceiling during
-// this initial bring-up. Index 1 (5%) is the boot default, matching the
-// existing Stage S2 'speaker tone' amplitude for continuity.
-constexpr float SPEAKER_BENCH_VOLUME_STEPS_FRACTION[] = {0.02f, 0.05f, 0.08f, 0.12f, 0.18f, 0.25f};
-constexpr uint8_t SPEAKER_BENCH_VOLUME_STEP_COUNT =
-    sizeof(SPEAKER_BENCH_VOLUME_STEPS_FRACTION) / sizeof(SPEAKER_BENCH_VOLUME_STEPS_FRACTION[0]);
-constexpr uint8_t SPEAKER_BENCH_VOLUME_DEFAULT_INDEX = 1;  // 5%
+// --- V1.1: finalized normal-use volume ladder (see
+// docs/current/SPEAKER.md "Physically observed usable range"). Supersedes
+// the original Stage S1/S2 bring-up-era 2%-25% ladder that used to live
+// here -- that ladder existed only because gain/volume had not yet been
+// physically confirmed AT ALL on real hardware. Physical testing since,
+// with the current 40mm/4ohm/3W speaker, found roughly 35%-100% digital
+// amplitude is the actually useful range (below ~35% not useful; 50-100%
+// clearly intelligible; 100% physically validated and selectable, with the
+// best observed signal-to-noise ratio). 'speaker t'/'1'/'2'/'3'/'sweep'/
+// 'melody'/'chord'/'lowmidhigh'/'speechtest'/'musictest' all read this SAME
+// live ladder (see SpeakerTest.cpp) -- one volume model for normal speaker
+// output, not two. 'speaker noise' stays independently capped
+// (SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION below); 'speaker fmt1'/'fmt2'/
+// 'fmt3' and 'speaker tone' (Stage S2 bring-up) stay fixed at their own
+// conservative constants (SPEAKER_FMT_DIAG_AMPLITUDE_FRACTION/
+// SPEAKER_BRINGUP_TONE_AMPLITUDE_FRACTION above) -- deliberately NOT tied to
+// this ladder, so those diagnostics remain a fixed, repeatable reference
+// regardless of the user's current normal volume setting.
+constexpr float SPEAKER_VOLUME_STEPS_FRACTION[] = {0.35f, 0.50f, 0.60f, 0.70f, 0.80f, 0.90f, 1.00f};
+constexpr uint8_t SPEAKER_VOLUME_STEP_COUNT =
+    sizeof(SPEAKER_VOLUME_STEPS_FRACTION) / sizeof(SPEAKER_VOLUME_STEPS_FRACTION[0]);
+// 70% -- below ~35% wasn't physically useful, 50-100% was clearly
+// intelligible, 70% is a reasonable normal-use midpoint, and 100% remains
+// selectable when it's specifically wanted. Not persisted across reboot --
+// no settings/EEPROM system exists in this firmware yet; every boot starts
+// at this default.
+constexpr uint8_t SPEAKER_VOLUME_DEFAULT_INDEX = 3;
 
 // Consecutive i2s_write() failures required before '[SPEAKER] WARNING:
 // repeated write failures' escalates beyond the single per-occurrence
@@ -1835,10 +1869,10 @@ constexpr float SPEAKER_FMT_DIAG_AMPLITUDE_FRACTION = 0.02f;
 // src/SpeakerTest.cpp's sweepSample()/boundedNoteSequenceSample()/
 // noiseSample() (all pre-existing generic engines, reused unchanged here)
 // and the SPEAKER_BENCH_MELODY_NOTES/SPEAKER_BENCH_CHORD_NOTES note tables
-// in that file. Sweep/melody/chord all use the CURRENT bench volume (see
-// 'speaker v'/'+'/'-' above, SPEAKER_BENCH_VOLUME_STEPS_FRACTION), read
-// live at the moment each test starts -- not a separate fixed amplitude.
-// Noise is the one exception, deliberately capped independent of bench
+// in that file. Sweep/melody/chord all use the CURRENT normal speaker
+// volume (see 'speaker volume'/'v'/'+'/'-' above, SPEAKER_VOLUME_STEPS_FRACTION),
+// read live at the moment each test starts -- not a separate fixed amplitude.
+// Noise is the one exception, deliberately capped independent of that
 // volume (see SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION below).
 
 // 'speaker sweep': same 150Hz->3000Hz range as the existing bare 'sweep'
@@ -1899,3 +1933,68 @@ constexpr uint8_t VOLTEST_MELODY_EXCERPT_NOTE_COUNT = 7;
 constexpr float VOLTEST_HIGH_OUTPUT_THRESHOLD_FRACTION = 0.50f;
 constexpr float VOLTEST_EIGHTY_PERCENT_WARNING_FRACTION = 0.80f;
 constexpr float VOLTEST_FULL_SCALE_WARNING_FRACTION = 1.00f;
+
+// ============================================================================
+// V1.1 buzz/noise isolation and realistic-content diagnostics (see
+// docs/current/SPEAKER.md). All reuse this file's existing generic engines
+// (boundedNoteSequenceSample() via the BenchNote table, same as 'speaker
+// melody'/'chord') -- no new I2S write path, no pin/clock/format changes.
+// ============================================================================
+
+// --- 'speaker silencecheck'/'speaker carriercheck': force continuous
+// digital zero (no synthesized tone) and report state. Both are actually
+// the SAME underlying signal (feedSpeakerChunk() already writes an
+// all-zero buffer whenever phase==SILENCE) -- carriercheck additionally
+// prints the live I2S clock/pin-routing diagnostics (i2s_get_clk(),
+// GPIO16 routing) so the two states ("clocks running + zeros" vs "actual
+// audio content") are explicitly distinguishable in the serial log, not
+// just implied. Neither has a fixed duration -- both run until 'speaker
+// stop'/'stopmusic'/'k' explicitly ends them (user-controlled period).
+constexpr uint32_t SPEAKER_SILENCECHECK_STATUS_INTERVAL_MS = 5000;  // periodic "still active" reminder
+
+// --- 'speaker lowmidhigh': 150/440/1500Hz in sequence, equal duration and
+// fades, at the current normal speaker volume -- unlike the original fixed-
+// 10%-amplitude 'low'/'mid'/'high' commands (SPEAKER_LMH_* above, preserved
+// unchanged), this is the volume-ladder-aware version requested for V1.1.
+// Reuses the SAME 150/440/1500Hz frequencies as SPEAKER_LOW/MID/HIGH_FREQUENCY_HZ
+// above (no new frequency constants) and the bounded note-sequence engine
+// 'speaker melody'/'chord' already use.
+// Fades come from the shared engine's own SPEAKER_BENCH_NOTE_RAMP_MS (same
+// as every note in 'speaker melody'/'chord') -- no separate ramp constant
+// needed since all three notes here go through that one engine.
+constexpr uint32_t SPEAKER_LOWMIDHIGH_NOTE_DURATION_MS = 1200;
+constexpr uint32_t SPEAKER_LOWMIDHIGH_GAP_MS = 150;
+
+// --- 'speaker speechtest': an ORIGINAL synthetic speech-like diagnostic --
+// NOT copyrighted audio, not a recording. This engine has no polyphony/
+// formant synthesis (see this file's top-of-file note on why -- one sine
+// generator, reused via the existing bounded note-sequence engine), so
+// "formant-like" here means an arpeggiated, rapidly-changing approximation:
+// short "syllable" notes across the fundamental-voice frequency range
+// (~110-260Hz, typical adult speech F0) with syllable-like durations and
+// brief gaps, at the current normal speaker volume. ~10s total.
+constexpr uint32_t SPEAKER_SPEECHTEST_TARGET_DURATION_MS = 10000;
+
+// --- 'speaker musictest': an ORIGINAL short musical diagnostic -- NOT a
+// copyrighted melody. Low/mid/high notes, short gaps ("rests"), and
+// transient-like short-attack notes mixed with longer sustained ones, at
+// the current normal speaker volume. ~10-15s total.
+constexpr uint32_t SPEAKER_MUSICTEST_TARGET_DURATION_MS = 12000;
+
+// --- 'speaker isolate on'/'off'/'status': optional noise-isolation mode --
+// motor commanded stopped once (MotorDriver's own motorStop(), the same
+// exported API every other behavior layer uses -- see AGENTS.md's
+// single-owner table) and LEDs fully muted via Controls.h's existing
+// isMuted()/setMuted() (the SAME mechanism MotorPowerGuard's FULL_MUTE
+// strategy already uses -- not a new LED-power mechanism), for isolating
+// whether residual buzz correlates with motor/LED activity on the shared
+// 5V rail (see docs/current/POWER.md). Diagnostic-only; restores the prior
+// mute state on 'speaker isolate off'. Never activated automatically by any
+// other command. Best-effort, not a hard interlock: it does not add itself
+// to isAnyMotorDiagnosticActive() (see ExpressiveMotion.h), so an
+// independently-active motor behavior (e.g. MusicMotorController) can still
+// re-engage the motor during the isolate window -- see SpeakerTest.cpp's
+// speakerIsolateOn() for the full caveat. Adding a true interlock would mean
+// changing the motor mutual-exclusion architecture, out of scope for this
+// diagnostic-only feature per this sprint's explicit "do not redesign the
+// motor... architecture" constraint.

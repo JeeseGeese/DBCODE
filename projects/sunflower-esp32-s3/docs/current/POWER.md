@@ -50,6 +50,269 @@ one supply, with no dedicated per-peripheral regulation.
   the final successful motor bring-up validation (forward/reverse/stop
   via live serial commands).
 
+## Current brownout investigation (V1.1, open — last updated 2026-08-08)
+
+**Current diagnosis wording: "Power/ground distribution instability
+under load — root cause not formally closed. Strong physical evidence
+now points to incoming source-power capability (see 'Leading hypothesis'
+below); repeated A/B testing and/or voltage measurements would be
+required for final electrical root-cause closure."** Do not mark LED
+brightness, the 58-vs-36 LED count error, the 1000µF capacitor, or any
+single factor below as a *proven* standalone root cause — see each
+subsection's own OBSERVED/HYPOTHESIS/CHANGE MADE/RESULT/CURRENT
+CONCLUSION/STILL UNPROVEN breakdown. This supersedes the "No ESP32
+resets, brownouts, or watchdog failures were observed" note above for
+the *current* prototype state — that note describes a specific past
+successful validation run, not a claim that brownouts can't occur under
+other conditions.
+
+### A. New brownout behavior (V1.1)
+
+**OBSERVED:**
+- During recent V1.1 testing, Sunny began experiencing `BROWNOUT_RST`
+  resets — new behavior relative to previous successful operation
+  (including, historically, at 100% LED brightness).
+- Serial logs captured the ROM bootloader's `rst:0xf (BROWNOUT_RST)`,
+  and the firmware's own reset-reason print (added this sprint, see
+  `main.cpp`'s `setup()`) correctly reported `[SYSTEM] Reset reason:
+  BROWNOUT (9)`.
+- The most reproducible failure condition involved **high LED load /
+  high requested brightness combined with active `MusicMotorController`
+  movement**, especially aggressive motor transitions near M100 and
+  high-load direction changes/reversals.
+- One especially useful captured failure occurred immediately after a
+  MusicMotor command approximately equivalent to `drop phrase step
+  direction=REVERSE target=M100 punch=1` (a strong-hit reversal to
+  maximum commanded PWM during a drop-phrase sequence) while LEDs were
+  simultaneously under high load.
+
+**HYPOTHESIS:** Aggressive motor transitions under simultaneous LED
+load expose an existing power-distribution weakness on the shared 5V
+rail (see `motor-current-noise-mitigation.md`) severely enough to trip
+the ESP32's brownout detector, rather than just visibly disturbing LED
+output as previously observed.
+
+**STILL UNPROVEN:** That the motor reversal itself is defective, or
+that any single one of LED load / motor reversal / M100 operation is
+individually sufficient to cause a brownout in isolation. No controlled
+single-variable A/B test has isolated exactly which combination is
+necessary vs. sufficient.
+
+### B. Reset-loop / white-LED lockup incident (V1.1 debugging incident)
+
+**OBSERVED:** During this investigation, Sunny **temporarily** became
+stuck in repeated brownout/reset cycles. During some attempts the
+startup sequence reached the LED `HWTEST` phase and appeared to become
+stuck with the LEDs held **SOLID WHITE**; serial interaction became
+unresponsive during at least one such occurrence. Sequence of events as
+reported: Sunny repeatedly brownout-reset during startup, eventually
+booted; a separate occurrence left the LEDs visibly solid white with an
+unresponsive serial console. **This had not been normal historical
+Sunny behavior.**
+
+**RESULT:** Later testing showed Sunny could boot and operate normally
+again. This is recorded as a **V1.1 debugging incident**, not a
+permanent hardware fault — do not characterize it as permanent damage.
+Preserving it here matters specifically so a future session recognizes
+the symptom immediately if it recurs, rather than re-diagnosing from
+scratch.
+
+**CURRENT CONCLUSION:** The unprotected raw-white-frame bug found and
+fixed in `HardwareTest.cpp` (see section below) is a plausible
+contributor to *why* a brownout-prone supply condition would manifest
+specifically during the LED HWTEST phase (SOLID WHITE was, at the time,
+the single highest unprotected current command in the whole boot
+sequence) — but this is not proof that the HWTEST bug *alone* explains
+every observed reset-loop occurrence, since the underlying supply
+condition (see "Leading hypothesis" below) is a separate, still-open
+question.
+
+**STILL UNPROVEN:** Whether this specific incident would have occurred
+under battery-pack power (see below) — it was not deliberately
+reproduced under controlled conditions before the power source was
+changed.
+
+### C. 58 → 36 LED count correction — related but separate from the brownouts
+
+**CHANGE MADE:** `NUM_LEDS` corrected from 58 to 36 (physically
+confirmed count) — see `docs/current/HARDWARE_ARCHITECTURE.md` and
+`docs/lessons/verify-physical-led-count.md` for the full audit.
+
+**RESULT / CURRENT CONCLUSION:** The previous 58-LED value was **NOT**
+shown to be a cause of the brownouts. The normal-rendering power
+estimator (`applyPowerLimit()`) using 58 actually **overestimated** real
+LED current relative to the true 36 LEDs (extra logical pixels drove no
+physical current), which made its normal-rendering throttling behavior
+*conservative*, not under-protective. The count error made the
+estimate's *accuracy* wrong, not its *safety direction* — an inaccurate
+software estimate is a different thing from a proven physical
+brownout cause. Treat the LED-count correction and the brownout
+investigation as related (both power-adjacent) but **separate** open
+items, not one.
+
+### D. HWTEST power-safety bug — VERIFIED FIX
+
+**OBSERVED (bug):** The startup `HardwareTest.cpp` LED sequence
+previously bypassed the normal LED power limiter and brightness
+protection entirely. `SOLID WHITE` commanded a raw, unscaled `255,255,255`
+to every LED, with the corrected 36-LED configuration estimated at
+approximately **2196mA** — a genuine unprotected high-current command
+at boot, and a plausible contributor to why a brownout-prone condition
+would surface specifically around the HWTEST phase (see incident B
+above).
+
+**CHANGE MADE:** `HardwareTest.cpp` now routes every HWTEST frame
+(SOLID RED/GREEN/BLUE/WHITE, RAINBOW) through the SAME `applyPowerLimit()`
+function normal rendering uses (`main.cpp`, un-`static`'d for this
+reuse), instead of writing raw frames directly to the strip.
+
+**RESULT — physically verified after upload** (this is a **VERIFIED
+V1.1 FIX**, not just a code change):
+
+```
+[HWTEST] LED count configured: 36 (expected 36)
+[HWTEST] LED power limiter: LED_CURRENT_LIMIT_MA=1000
+[POWER] Throttling: estimated 2196mA exceeds 1000mA limit, scaling by 0.46
+[HWTEST] LED: SOLID WHITE (actual 116,116,116 after power limiter)
+```
+
+The corrected startup sequence completed successfully on real hardware.
+
+**REUSABLE LESSON:** Diagnostic / startup / hardware-test code must not
+bypass normal power-safety mechanisms merely because it is "test" code
+— see `docs/lessons/led-power-limiting.md`, updated with this finding
+rather than duplicated into a new lesson file.
+
+### E. Ground / breadboard / Dupont sensitivity
+
+**OBSERVED:** The prototype currently uses a solderless breadboard/
+prototype-PCB environment, Dupont jumper wiring, and relatively long
+temporary interconnects in places; final hardware will eventually use
+permanent soldered PCB wiring. During troubleshooting, changing ground
+connections was observed to materially affect behavior. One particularly
+notable observation: **changing the MAX98357A ground connection caused
+the WS2812 LEDs to display incorrect/chaotic colors.**
+
+**CURRENT CONCLUSION:** This is evidence that the prototype has
+meaningful sensitivity to ground reference / return-path quality — a
+disturbed ground reference visibly corrupted the WS2812 data signal
+(single-wire, timing-sensitive protocol), not just amplifier noise.
+**Do NOT** read this as proof that the MAX98357A caused the brownouts —
+it demonstrates that ground topology and breadboard/Dupont connection
+quality matter in the current prototype generally, which is relevant
+context for the brownout investigation without being a brownout root
+cause finding itself.
+
+**STILL UNPROVEN:** The exact mechanism (shared ground impedance,
+ground-loop coupling, or a specific bad connection) — not
+instrumented/measured.
+
+### F. LED data-line series resistor
+
+**CHANGE MADE:** A 330Ω series resistor was added between `ESP32 GPIO4`
+and `WS2812 DIN` (`ESP32 GPIO4 -> 330Ω -> WS2812 DIN`) — see
+`docs/current/ELECTRICAL.md` for the wiring detail.
+
+**PURPOSE:** Improves WS2812 data signal integrity / reduces ringing on
+the data line. This is a **data-line** signal-integrity measure, **not**
+a power-rail resistor — it provides no additional 5V current capacity
+and should never be confused with one.
+
+**RESULT:** Appropriate for the LED data path; it did **not**, by
+itself, eliminate the observed power brownout (expected — it addresses
+signal integrity, not current delivery). Should be considered for the
+final PCB design unless future testing gives a specific reason
+otherwise.
+
+### G. 1000µF bulk capacitor — confounded result, not a cause
+
+**OBSERVED:** The 5V prototype rail currently accepts the existing
+1000µF bulk capacitor (5V → capacitor → GND, correct polarity — see
+`ELECTRICAL.md`). Earlier, during unstable wiring experiments, adding/
+rearranging this capacitor **coincided with** reset-loop behavior; after
+restoring/reseating wiring, the 5V rail operated normally with the
+capacitor installed.
+
+**CURRENT CONCLUSION:** Do **NOT** document "the 1000µF capacitor
+causes brownouts" — the earlier coincident result was confounded by
+unstable prototype wiring/ground conditions at the time (see section E),
+not isolated evidence against the capacitor itself. The capacitor is
+currently tolerated on the rail with no known adverse effect once
+wiring was restored.
+
+**DESIGN DIRECTION (recommendation, not yet validated):** Final PCB
+decoupling should use appropriate local capacitance near individual
+loads (LEDs, amplifier, motor driver) rather than assuming one large
+bulk capacitor alone solves power-integrity problems. No specific new
+capacitor values are recommended here beyond what's already installed
+and documented in `ELECTRICAL.md` — any future value should be
+explicitly labeled as a recommendation requiring validation, not a
+validated fact.
+
+### H. Leading hypothesis: incoming source-power capability (USB vs. battery)
+
+**This is currently the strongest new finding.**
+
+**OBSERVED:** The brownouts were occurring while Sunny's ESP32 was
+being powered from the **computer's USB connection**. The incoming
+power source was then changed from the computer USB connection to a
+**battery pack**. With battery-pack power, Sunny was able to operate
+under the previously problematic high-load conditions — **including
+combined LED + MusicMotor operation** — without the observed
+brownouts.
+
+**CURRENT LEADING HYPOTHESIS:** Incoming source-power capability /
+voltage sag / source-path resistance is now the leading explanation for
+the observed combined-load brownouts. Computer USB power, the USB
+cable/path, port current capability, or source impedance may have been
+unable to maintain sufficient voltage during combined LED + motor
+transient loads. The battery pack appears to provide substantially
+better power margin.
+
+**STILL UNPROVEN — root cause is NOT formally closed:** No controlled
+voltage measurements have been taken at multiple nodes, and no rigorous
+repeated A/B test has proven exactly which part of the computer USB
+power path was limiting (the port itself, the cable, the computer's own
+current limiting, or something else upstream). Use wording like "strong
+physical evidence / leading hypothesis" — not "confirmed" or "root
+cause identified" — until that measurement/A-B work is done.
+
+### Investigation list (still open items, roughly in order of what to check first)
+
+A breadboard/Dupont prototype is inherently more suspect than a
+soldered one for exactly this class of symptom; the USB-vs-battery
+finding above elevates item 4 to leading-hypothesis status, but the
+others remain worth checking:
+
+1. **Bad/loose ground connection** — a high-resistance or intermittent
+   ground return under a transient load (motor reversal, LED current
+   step) can produce a local voltage sag that looks electrically like a
+   brownout even if the supply itself is adequate. Check every ground
+   junction, not just the supply's own ground pin.
+2. **Breadboard contact resistance** — solderless breadboard strips
+   degrade and have nontrivial contact resistance, especially under
+   repeated insertion/removal and at the current levels LEDs/motor draw.
+3. **Dupont jumper resistance/contact quality** — thin-gauge jumper
+   wires and their friction-fit connectors are a common source of
+   marginal, load-dependent contact resistance.
+4. **Incoming source-power path (USB vs. battery)** — see "Leading
+   hypothesis" above; now the strongest single lead, but not yet
+   isolated to a specific component (port/cable/computer).
+5. **Combined transient loads** — LED current steps and motor reversals
+   happening close together in time, stacking their transient draw.
+6. **Motor reversals** specifically — inrush/back-EMF transients at
+   direction changes.
+7. **LED load** — real but only one of several plausible contributors,
+   not a standalone confirmed cause.
+8. **Power/ground distribution generally** — wire gauge, distribution
+   topology, and decoupling placement across the whole shared 5V rail.
+
+Investigate ground/connection integrity and the source-power path
+before considering a redesign of the entire supply architecture — both
+are cheaper to rule in/out than an architectural change, and the
+evidence so far (sections E and H) points more toward prototype wiring/
+source-path quality than a fundamental design flaw.
+
 ## LED-side software power limiting
 
 `main.cpp`'s `applyPowerLimit()` estimates per-frame LED current as
@@ -61,6 +324,18 @@ every 2 seconds when it does. **This is a software estimate for
 bring-up safety, not a substitute for correct electrical power
 design** — it cannot protect against a supply undersized for the LEDs'
 physical maximum draw.
+
+`NUM_LEDS` now being physically correct (36, see section C above) means
+this estimate is computed against the real pixel count rather than an
+inflated one (36 vs. the old 58) — at full white this alone changes the
+estimate from ~3538mA to ~2196mA (still well over the 1000mA limit, so
+the limiter still engages; the corrected count changes the *accuracy*
+of the estimate, not whether throttling happens for a solid-white
+frame). `HardwareTest.cpp`'s boot-time HWTEST sequence now routes every
+frame through this SAME function rather than writing raw frames
+directly to the strip — see section D above ("HWTEST power-safety bug
+— VERIFIED FIX") for the full before/after and physical verification
+log.
 
 ## Mitigations that exist today (workarounds, not fixes)
 
@@ -87,7 +362,17 @@ max-energized safety net).
 
 ## Recommended next step
 
-Not yet done: a dedicated external motor power supply, common-grounded
-with the ESP32, sized for actual combined draw including motor startup
-inrush — see `ROADMAP.md` (listed under V1.1) and `ELECTRICAL.md`'s
-"Future production recommendations."
+Nearer-term: controlled voltage measurements and a repeated A/B test
+between computer-USB power and battery-pack power (see "Leading
+hypothesis" above) to move from "strong evidence" to actual electrical
+root-cause closure — this is cheaper than a hardware change and directly
+targets the current leading hypothesis.
+
+Longer-term / not yet done: a dedicated external motor power supply,
+common-grounded with the ESP32, sized for actual combined draw including
+motor startup inrush — see `ROADMAP.md` (listed under V1.1) and
+`ELECTRICAL.md`'s "Future production recommendations." Do not treat this
+as the confirmed fix until the source-power hypothesis above is either
+confirmed or ruled out — if the computer-USB path turns out to be the
+limiting factor, a better/dedicated power *source* (not necessarily a
+second, motor-only supply) may be the more targeted fix.

@@ -7,6 +7,23 @@ and confirmed working) from **currently tested configuration** (a
 specific choice among options, e.g. gain strapping) from **future
 production recommendations** (not yet done). Do not blur these three.
 
+## WS2812 LED strip — verified wiring
+
+| Pin | Connection |
+|---|---|
+| DIN (data) | `ESP32 GPIO4 -> 330Ω series resistor -> WS2812 DIN` (added during V1.1 power/noise investigation, see `docs/current/POWER.md`) |
+| VCC | shared 5V rail |
+| GND | common ground |
+
+The 330Ω series resistor is a **data-line signal-integrity measure**
+(reduces ringing/reflections on the single-wire WS2812 protocol) —
+**not** a power-rail component and provides no additional 5V current
+capacity. It did not, by itself, resolve the V1.1 brownout
+investigation (expected, since it addresses signal integrity rather
+than current delivery) — see `docs/current/POWER.md`'s "LED data-line
+series resistor" section. Recommended to carry forward into the final
+PCB design unless future testing gives a specific reason otherwise.
+
 ## INMP441 microphone — verified wiring
 
 | Pin | Connection |

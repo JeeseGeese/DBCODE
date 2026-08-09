@@ -9,15 +9,19 @@ metadata:
 
 ## Problem
 
-58 WS2812B LEDs can draw far more current than an ESP32's onboard 3.3V
-regulator is rated for at anything beyond very low brightness.
+A strip of dozens of WS2812B LEDs (Sunny: 36, physically confirmed as
+of 2026-08-08 — see `docs/lessons/verify-physical-led-count.md`) can
+draw far more current than an ESP32's onboard 3.3V regulator is rated
+for at anything beyond very low brightness.
 
 ## Root cause / discovery
 
 WS2812-class LEDs draw current per-channel-per-LED at full drive
 (Sunny's estimate: `LED_MAX_MA_PER_CHANNEL=20mA`, `LED_IDLE_MA_PER_LED
-=1mA` — see `Config.h`). At 58 LEDs, worst-case full-white draw is on
-the order of amps, far beyond what a 3.3V logic regulator provides.
+=1mA` — see `Config.h`). At Sunny's 36 LEDs, worst-case full-white draw
+is still on the order of ~2A, far beyond what a 3.3V logic regulator
+provides — the specific LED count changes the exact number, not the
+underlying rule.
 
 ## How it was verified
 

@@ -23,30 +23,34 @@ Sunny V1  (baseline captured 2026-08-07 — see docs/V1/, tag
            sunny-v1-baseline)
    |
    v
-Sunny V1.1  (current active development)
-   -- speaker buzz/static cleanup, speaker normal-use volume refinement,
-      continued LED BaseEffect/AudioOverlay refinement, power/ground
-      cleanup, firmware stability/polish -- see "V1.1" below
+Sunny V1.1  -- ESP32 refinement / reliability / speaker / power /
+               documentation -- COMPLETE (see "V1.1" below) -- was NOT
+               a new-feature sprint; the goal was a stable platform to
+               build the touchscreen/UI on top of.
    |
    v
-[GATE] Speaker acceptable
-   -- residual buzz/noise root cause understood well enough to pick a
-      default volume/gain configuration for normal use (see
-      docs/current/SPEAKER.md)
+[GATE] V1.1 physically validated -- PASSED (2026-08-08, battery power)
+   -- see docs/current/V1_1_STATUS.md's "Physical validation result" --
+      combined-load operation, speaker/LED/button/mic checks all
+      confirmed, no open safety concern carried forward. Electrical
+      brownout root cause was NOT required to be formally closed to
+      pass this gate (see below) -- it needed to be documented,
+      understood, and not actively unsafe, which it is.
    |
    v
-[GATE] Power architecture acceptable
-   -- combined LED+amplifier+motor load on the shared 5V rail measured
-      under real conditions; either confirmed adequate or a dedicated
-      motor supply adopted (see docs/current/POWER.md)
+Sunny V1.2  -- Touchscreen + UI programming
+   -- bring up the selected touchscreen/display hardware, local Sunny
+      UI architecture -- see "V1.2" below
    |
    v
-[GATE] V1.1 refinements physically validated
-   -- ExpressiveMotion/BehaviorEngine checklists run; no open safety
-      concern carried forward
+[GATE] Touchscreen UI stable
+   -- display initializes reliably, core screens (status/diagnostics/
+      controls) work without corrupting or blocking existing LED/audio/
+      motor timing, UI-to-subsystem interface is clean (read-only status
+      + explicit command paths, not direct internal-state pokes)
    |
    v
-Sunny V1.2  -- Raspberry Pi integration
+Sunny V1.3  -- Raspberry Pi integration
    |
    v
 [GATE] ESP32 <-> Pi communication validated
@@ -55,7 +59,7 @@ Sunny V1.2  -- Raspberry Pi integration
       docs/architecture/PI_INTERFACE.md)
    |
    v
-Sunny V1.3  -- Camera integration (via the Pi, not the ESP32)
+Sunny V1.4  -- Camera integration (via the Pi, not the ESP32)
    |
    v
 [GATE] Vision stable
@@ -63,7 +67,7 @@ Sunny V1.3  -- Camera integration (via the Pi, not the ESP32)
       requests without spurious/flickering transitions
    |
    v
-Sunny V1.4  -- LLM / voice / personality integration
+Sunny V1.5  -- LLM / voice / personality integration
    |
    v
 [GATE] Speech + feedback prevention validated
@@ -73,9 +77,17 @@ Sunny V1.4  -- LLM / voice / personality integration
    |
    v
 Sunny V2.0  -- mature integrated Sunny (vision + voice + movement +
-               lights, production power system, production wiring/PCB,
-               final enclosure, polished behavior)
+               lights + touchscreen UI, production power system,
+               production wiring/PCB, final enclosure, polished
+               behavior)
 ```
+
+**Sequence correction (2026-08-08):** Touchscreen/UI now comes
+immediately after V1.1, **before** Raspberry Pi integration (previously
+V1.2) — Pi is now V1.3, camera V1.4, LLM/voice V1.5. This reflects a
+deliberate reprioritization, not a scope change to any individual
+milestone's content. Later milestones (V1.4 onward) remain provisional
+and may be renumbered again as work approaches them.
 
 A gate is "passed" when its condition is true and a human has recorded
 that observation (per this project's physical-validation policy,
@@ -92,45 +104,91 @@ Audio Mode, DRV8833 motor fully integrated (`MusicMotorController`
 Rev 10.1, `ExpressiveMotion`/`BehaviorEngine`), 18 host tests, and this
 documentation baseline itself.
 
-## Sunny V1.1 — current active development
+## Sunny V1.1 — ESP32 refinement / reliability / speaker / power / documentation — COMPLETE
 
-Begins immediately following the `sunny-v1-baseline` tag. No major
-processor-architecture change is planned for this phase — the goal is
-to earn the "Speaker acceptable" and "Power architecture acceptable"
-gates above, plus general refinement. Primary V1.1 goals:
+Began immediately following the `sunny-v1-baseline` tag. **Not a
+new-feature sprint** — the goal was a stable ESP32 platform to build
+V1.2's touchscreen/UI on top of, not new subsystem capability. **Status
+as of 2026-08-08: COMPLETE** — implementation, documentation, and
+physical validation (battery power) all passed — see
+`docs/current/V1_1_STATUS.md` for the full record.
 
-- Speaker buzz/static cleanup (see `docs/current/SPEAKER.md`'s open
-  hypotheses) toward the "Speaker acceptable" gate above.
-- Speaker normal-use volume refinement.
-- Continued LED BaseEffect refinement
-  (`docs/development/ADDING_LED_EFFECTS.md`).
-- Continued AudioOverlay refinement
-  (`docs/development/ADDING_AUDIO_OVERLAYS.md`).
-- Power/ground cleanup — measure combined-load power behavior toward
-  the "Power architecture acceptable" gate above; evaluate a dedicated
-  external motor supply.
-- Firmware stability/polish, including the `ExpressiveMotion`/
-  `BehaviorEngine` physical validation checklists
-  (`docs/current/KNOWN_LIMITATIONS.md`) — the largest current
-  software-vs-physical gap.
-- Motor behavior may be refined if desired
-  (`docs/playbooks/MUSIC_REACTIVE_MOTION_VALIDATION.md`), but motor
-  integration is already complete — this is polish, not new work.
+Accomplished this milestone:
 
-## Sunny V1.2 — Raspberry Pi integration
+- Speaker diagnostic/refinement framework: normal-use volume ladder
+  (35/50/60/70/80/90/100%, 70% default), silence/carrier/lowmidhigh/
+  speech/music diagnostics, APLL investigated and closed. Residual
+  low-frequency buzz remains **unresolved and prototype-sensitive**,
+  documented as such, not claimed fixed — see `docs/current/SPEAKER.md`.
+- 36-LED physical count correction (was incorrectly 58) — see
+  `docs/lessons/verify-physical-led-count.md`.
+- HWTEST power-safety fix: the startup LED test sequence now uses the
+  same `applyPowerLimit()` current-limiting path as normal rendering,
+  physically verified. See `docs/current/POWER.md` section D.
+- Brownout/reset-loop/solid-white incident investigated and documented.
+  Leading hypothesis (computer-USB vs. battery-pack source power) is
+  **strong evidence, not a formally closed electrical root cause** — see
+  `docs/current/POWER.md`'s "Current brownout investigation".
+- 330Ω WS2812 data-line resistor, 1000µF bulk capacitor, and breadboard/
+  Dupont prototype limitations all documented without overclaiming.
+- Full host test suite restored/verified (20/20 passing).
 
-Begins once V1.1's gates are passed. Define the ESP32↔Pi transport and
-protocol, processor responsibilities, boot/shutdown/recovery behavior,
-and the power relationship. See `docs/architecture/PI_INTERFACE.md`
-for the design intent and open questions.
+**This gate does not require the brownout electrical root cause to be
+formally closed** — it requires the finding to be documented,
+understood, and not actively unsafe (brownout detector stays enabled,
+no permanent performance-crippling workaround was applied to hide the
+prototype power limitation — `MusicMotorController` remains fully
+operational). See "V1.1 exit criteria" in `docs/current/V1_1_STATUS.md`.
 
-## Sunny V1.3 — Camera integration
+## Sunny V1.2 — Touchscreen + UI programming
+
+Begins once V1.1 is physically validated and the checkpoint is
+committed/tagged. Goals:
+
+- Bring up the selected touchscreen/display hardware (hardware not yet
+  chosen as of this roadmap revision — do the display-requirements
+  inspection before committing to a UI framework).
+- Choose/finalize a UI framework once the actual display
+  hardware/interface (SPI/parallel/resolution/touch controller) is
+  known — LVGL is a plausible default for this class of embedded
+  display but is **not locked in** without inspecting the real
+  requirements first.
+- Create Sunny's local UI architecture: how the UI layer reads from
+  and (where appropriate) commands existing subsystems without
+  becoming a second owner of any GPIO/peripheral (see
+  `AGENTS.md`'s single-owner-resource convention — the UI should
+  consume status, not bypass existing owners).
+- Diagnostics/status screens: speaker/mic/motor/LED status visible on
+  the touchscreen, reusing existing status-query surfaces
+  (`printSpeakerTestStatus()`, `printSpeakerVolStatus()`, motor/LED
+  status equivalents) rather than duplicating state.
+- Controls/settings screens: volume, brightness, mode selection, etc.
+  — through the same command paths the serial dispatcher already uses
+  where possible, not a parallel control mechanism.
+- Animations/personality display on-screen, coordinated with (not
+  competing against) the existing LED/motor personality behaviors.
+- A clean, explicit interface between the UI layer and existing Sunny
+  subsystems — read-only status queries and explicit command
+  functions, never direct internal-state manipulation.
+
+See `docs/CLAUDE_CONTEXT_GUIDE.md`'s "Touchscreen/UI work (V1.2)"
+section for the minimal context set for this milestone once it starts.
+
+## Sunny V1.3 — Raspberry Pi integration
+
+Begins once the touchscreen-UI gate is passed. Define the ESP32↔Pi
+transport and protocol, processor responsibilities, boot/shutdown/
+recovery behavior, and the power relationship. See
+`docs/architecture/PI_INTERFACE.md` for the design intent and open
+questions.
+
+## Sunny V1.4 — Camera integration
 
 Begins once the Pi-communication gate is passed. Camera connects to
 and is managed by the Pi, not the ESP32. See
 `docs/architecture/CAMERA_INTERFACE.md`.
 
-## Sunny V1.4 — LLM / voice / personality integration
+## Sunny V1.5 — LLM / voice / personality integration
 
 Begins once the vision-stability gate is passed. Speech output (local
 pre-recorded first, then dynamic LLM-generated via the Pi), high-level
@@ -141,9 +199,9 @@ ESP32 remains the real-time hardware controller — see
 
 ## Sunny V2.0 — mature integrated Sunny
 
-Vision + voice + movement + lights working together, a production
-power system, production soldered wiring/a PCB, final enclosure/
-mechanical architecture, polished user-facing behavior.
+Vision + voice + movement + lights + touchscreen UI working together,
+a production power system, production soldered wiring/a PCB, final
+enclosure/mechanical architecture, polished user-facing behavior.
 
 ---
 

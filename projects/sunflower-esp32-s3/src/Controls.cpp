@@ -469,12 +469,15 @@ static void printHelp() {
   Serial.println(F("           = personality-state coordinator (dev branch, see README)"));
   Serial.println(F("  speaker tone = Stage S2 bring-up test tone (440Hz, 300ms, 5% amplitude) -- the recommended"));
   Serial.println(F("           FIRST physical sound test, see docs/SPEAKER_BRINGUP_PLAN.md   speaker stop = stop it"));
-  Serial.println(F("  speaker t|1|2|3 = bench tones (440/220/440/880Hz) at adjustable volume   speaker stop = stop"));
-  Serial.println(F("  speaker v|+|- = print/raise/lower bench volume (2/5/8/12/18/25%)   speaker h = bench help"));
+  Serial.println(F("  speaker t|1|2|3 = bench tones (440/220/440/880Hz) at the current normal volume   speaker stop = stop"));
+  Serial.println(F("  speaker volume|v [<percent>|up|down]|+|- = normal volume (35/50/60/70/80/90/100%, default 70%)"));
+  Serial.println(F("           speaker h = bench help"));
   Serial.println(F("  speaker fmt1|fmt2|fmt3 = buzz/distortion A/B diagnostic (16/24/32-bit slot packing,"));
   Serial.println(F("           440Hz/750ms/2% each)   speaker fmtstatus = describe all three formats"));
-  Serial.println(F("  speaker sweep|melody|chord|noise = multi-tone bring-up tests at current bench volume"));
-  Serial.println(F("           (noise capped at 10% regardless of bench volume)   speaker h = full bench help"));
+  Serial.println(F("  speaker sweep|melody|chord|lowmidhigh|speechtest|musictest|noise = diagnostics at current volume"));
+  Serial.println(F("           (noise capped at 10% regardless of volume)   speaker h = full bench help"));
+  Serial.println(F("  speaker silencecheck|carriercheck = hold digital zero until 'speaker stop' (buzz isolation)"));
+  Serial.println(F("  speaker isolate on|off|status = diagnostic motor-stop + LED-mute mode (best-effort, see h)"));
   Serial.println(F("  speaker voltest|volquick = automatic 2->100% multi-tone volume ladder (full ~49s / quick ~9.5s)"));
   Serial.println(F("           speaker volstop = abort it   speaker volstatus = show its state"));
   Serial.println(F("  t/s = speaker sine/square 440Hz test tone (dev branch, see README)"));
@@ -740,13 +743,53 @@ static void dispatchSpeakerCommand(const char *args) {
   } else if (strcmp(args, "3") == 0) {
     startSpeakerBench3();
   } else if (strcmp(args, "v") == 0) {
-    printSpeakerBenchVolume();
+    printSpeakerVolume();
   } else if (strcmp(args, "+") == 0) {
-    speakerBenchVolumeUp();
+    speakerVolumeUp();
   } else if (strcmp(args, "-") == 0) {
-    speakerBenchVolumeDown();
+    speakerVolumeDown();
+  } else if (strncasecmp(args, "volume", 6) == 0 && (args[6] == '\0' || args[6] == ' ')) {
+    const char *volArgs = args + 6;
+    while (*volArgs == ' ') volArgs++;
+    if (*volArgs == '\0') {
+      printSpeakerVolume();
+    } else if (strcasecmp(volArgs, "up") == 0) {
+      speakerVolumeUp();
+    } else if (strcasecmp(volArgs, "down") == 0) {
+      speakerVolumeDown();
+    } else {
+      char *endPtr = nullptr;
+      long percent = strtol(volArgs, &endPtr, 10);
+      if (endPtr != volArgs && *endPtr == '\0' && percent >= 0 && percent <= 100) {
+        setSpeakerVolumePercent((uint8_t)percent);
+      } else {
+        Serial.printf("[CMD] Unknown 'speaker volume' argument '%s' -- try: (none)|up|down|<percent>\n", volArgs);
+      }
+    }
   } else if (strcmp(args, "h") == 0) {
     printSpeakerBenchHelp();
+  } else if (strcasecmp(args, "silencecheck") == 0) {
+    startSpeakerSilenceCheck();
+  } else if (strcasecmp(args, "carriercheck") == 0) {
+    startSpeakerCarrierCheck();
+  } else if (strcasecmp(args, "lowmidhigh") == 0) {
+    startSpeakerLowMidHigh();
+  } else if (strcasecmp(args, "speechtest") == 0) {
+    startSpeakerSpeechTest();
+  } else if (strcasecmp(args, "musictest") == 0) {
+    startSpeakerMusicTest();
+  } else if (strncasecmp(args, "isolate", 7) == 0 && (args[7] == '\0' || args[7] == ' ')) {
+    const char *isoArgs = args + 7;
+    while (*isoArgs == ' ') isoArgs++;
+    if (strcasecmp(isoArgs, "on") == 0) {
+      speakerIsolateOn();
+    } else if (strcasecmp(isoArgs, "off") == 0) {
+      speakerIsolateOff();
+    } else if (strcasecmp(isoArgs, "status") == 0 || *isoArgs == '\0') {
+      printSpeakerIsolateStatus();
+    } else {
+      Serial.printf("[CMD] Unknown 'speaker isolate' argument '%s' -- try: on|off|status\n", isoArgs);
+    }
   } else if (strcasecmp(args, "fmt1") == 0) {
     startSpeakerFmt1();
   } else if (strcasecmp(args, "fmt2") == 0) {
@@ -774,7 +817,8 @@ static void dispatchSpeakerCommand(const char *args) {
   } else {
     Serial.printf(
         "[CMD] Unknown 'speaker' subcommand '%s' -- try: "
-        "tone|stop|t|1|2|3|v|+|-|h|fmt1|fmt2|fmt3|fmtstatus|sweep|melody|chord|noise|"
+        "tone|stop|t|1|2|3|volume|v|+|-|h|fmt1|fmt2|fmt3|fmtstatus|sweep|melody|chord|lowmidhigh|"
+        "speechtest|musictest|noise|silencecheck|carriercheck|isolate|"
         "voltest|volquick|volstop|volstatus\n",
         args);
   }

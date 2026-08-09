@@ -61,7 +61,8 @@ Per-effect timing (e.g. `PETAL_BREATHE_PERIOD_MS`,
 gains/pools (e.g. `PULSE_MIN_WIDTH_LEDS`, `RIPPLE_MAX_COUNT`,
 `LIGHTNING_MAX_BOLTS`), and audio tuning (`AUDIO_NOISE_FLOOR`,
 `AUDIO_MAX_RMS`, `AUDIO_CLAP_THRESHOLD`, etc. — see
-`docs/current/AUDIO_ANALYSIS.md`'s tuning guide). `NUM_LEDS=58`, `LED_PIN=4`.
+`docs/current/AUDIO_ANALYSIS.md`'s tuning guide). `NUM_LEDS=36`
+(corrected 2026-08-08, physically confirmed; was 58), `LED_PIN=4`.
 
 ## Brightness handling
 

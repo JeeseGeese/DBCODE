@@ -7,6 +7,8 @@
 #include <soc/gpio_struct.h>
 
 #include "Config.h"
+#include "Controls.h"
+#include "MotorDriver.h"
 #include "SharedI2S.h"
 
 // ----------------------------------------------------------------------------
@@ -55,10 +57,15 @@ enum class SpeakerPhase { SILENCE, TONE_PLAYING };
 // sampleForIndex() and knows nothing about what kind of source is active.
 // FMT_DIAG is the one exception -- see fmtDiagSample()'s own comment for
 // why it bypasses sampleForIndex() entirely. BENCH_NOTES is 'speaker
-// melody'/'speaker chord' -- a bounded (non-looping) note sequence, sharing
-// one generic engine (boundedNoteSequenceSample() below) the same way SONG
-// shares songSample() across music1-4 -- see that function's own comment.
-enum class TestKind { SINE, SQUARE, SWEEP, MELODY, BEEP, NOISE, SONG, FMT_DIAG, BENCH_NOTES };
+// melody'/'speaker chord'/'speaker lowmidhigh'/'speaker speechtest' -- a
+// bounded (non-looping) note sequence, sharing one generic engine
+// (boundedNoteSequenceSample() below) the same way SONG shares songSample()
+// across music1-4 -- see that function's own comment. MUSICTEST_NOTES is
+// 'speaker musictest' -- the one diagnostic in this file that needs
+// per-note AMPLITUDE as well as frequency/duration ("changing dynamics"),
+// so it gets its own small table/engine (dynamicNoteSequenceSample())
+// rather than overloading BenchNote's fixed-amplitude shape.
+enum class TestKind { SINE, SQUARE, SWEEP, MELODY, BEEP, NOISE, SONG, FMT_DIAG, BENCH_NOTES, MUSICTEST_NOTES };
 
 // Stage S3 buzz/distortion diagnostic ('speaker fmt1'/'fmt2'/'fmt3') -- which
 // bit depth/justification to pack the sine sample as within each 32-bit I2S
@@ -139,10 +146,27 @@ bool writeErrorRepeatedWarningPrinted = false;
 // threshold every other test here tolerates via the cumulative counters.
 bool lastWriteHadFault = false;
 
-// --- Bring-up test bench state ('speaker t'/'1'/'2'/'3'/'v'/'+'/'-'/'h') --
-// see SPEAKER_BENCH_* in Config.h. Persists across presets/tests so the
-// chosen volume survives interruption by another command.
-uint8_t benchVolumeIndex = SPEAKER_BENCH_VOLUME_DEFAULT_INDEX;
+// --- V1.1 normal-use volume ('speaker t'/'1'/'2'/'3'/'volume'/'v'/'+'/'-') --
+// see SPEAKER_VOLUME_* in Config.h. Persists across presets/tests (not
+// across reboot -- no settings system exists) so the chosen volume survives
+// interruption by another command.
+uint8_t speakerVolumeIndex = SPEAKER_VOLUME_DEFAULT_INDEX;
+
+// --- V1.1 silence/carrier check state ('speaker silencecheck'/
+// 'carriercheck') -- see startSpeakerSilenceCheck()/startSpeakerCarrierCheck()
+// below. Both just hold phase==SILENCE (the same continuous digital zero
+// the speaker already transmits between tests) and print a periodic
+// reminder so a human knows the check is still running; neither has a
+// fixed duration, both end via the normal stop paths. ---
+bool silenceCheckActive = false;
+bool carrierCheckActive = false;
+unsigned long silenceCheckStartMs = 0;
+unsigned long lastSilenceCheckStatusMs = 0;
+
+void clearActiveChecks() {
+  silenceCheckActive = false;
+  carrierCheckActive = false;
+}
 
 // ----------------------------------------------------------------------------
 // Automatic volume-ladder diagnostic ('speaker voltest'/'volquick'/'volstop'/
@@ -607,6 +631,61 @@ constexpr BenchNote SPEAKER_BENCH_CHORD_NOTES[] = {
 constexpr uint8_t SPEAKER_BENCH_CHORD_NOTE_COUNT =
     sizeof(SPEAKER_BENCH_CHORD_NOTES) / sizeof(SPEAKER_BENCH_CHORD_NOTES[0]);
 
+// --- 'speaker lowmidhigh': 150/440/1500Hz in sequence, equal duration and
+// gaps -- the volume-ladder-aware counterpart to the original fixed-10%
+// 'low'/'mid'/'high' commands (SPEAKER_LOW/MID/HIGH_FREQUENCY_HZ above,
+// unchanged). Reuses the SAME frequency constants (no new ones) and this
+// same bounded note-sequence engine 'speaker melody'/'chord' use. ---
+constexpr BenchNote SPEAKER_LOWMIDHIGH_NOTES[] = {
+    {SPEAKER_LOW_FREQUENCY_HZ, SPEAKER_LOWMIDHIGH_NOTE_DURATION_MS},
+    {0.0f, SPEAKER_LOWMIDHIGH_GAP_MS},
+    {SPEAKER_MID_FREQUENCY_HZ, SPEAKER_LOWMIDHIGH_NOTE_DURATION_MS},
+    {0.0f, SPEAKER_LOWMIDHIGH_GAP_MS},
+    {SPEAKER_HIGH_FREQUENCY_HZ, SPEAKER_LOWMIDHIGH_NOTE_DURATION_MS},
+};
+constexpr uint8_t SPEAKER_LOWMIDHIGH_NOTE_COUNT =
+    sizeof(SPEAKER_LOWMIDHIGH_NOTES) / sizeof(SPEAKER_LOWMIDHIGH_NOTES[0]);
+
+// --- 'speaker speechtest': an ORIGINAL synthetic speech-like diagnostic --
+// NOT copyrighted audio, not a recording, not real speech. This engine has
+// no polyphony/formant synthesis (one sine generator -- see this file's
+// top-of-file comment), so "formant-like" here is an arpeggiated, rapidly-
+// changing approximation: short "syllable" notes across the fundamental
+// adult-voice range (~110-250Hz, spanning typical male/female F0), grouped
+// into "word"-like runs (short intra-word gaps, longer inter-word/sentence
+// gaps) with rising and falling pitch contours (question-like vs
+// statement-like), ~10s total. Each note's own ramp-in/out (via this
+// engine's existing segmentEnvelope() call) is the "amplitude envelope
+// resembling syllables". ---
+constexpr BenchNote SPEAKER_SPEECHTEST_NOTES[] = {
+    // "word" 1 -- 3 short syllables, mid-low pitch
+    {145.0f, 140}, {0.0f, 50}, {160.0f, 120}, {0.0f, 50}, {150.0f, 160}, {0.0f, 220},
+    // "word" 2 -- 2 syllables, slightly higher
+    {185.0f, 150}, {0.0f, 50}, {200.0f, 180}, {0.0f, 260},
+    // "word" 3 -- 4 syllables, rising pitch (question-like contour)
+    {150.0f, 110}, {0.0f, 40}, {170.0f, 110}, {0.0f, 40}, {195.0f, 120}, {0.0f, 40}, {230.0f, 200}, {0.0f, 320},
+    // "word" 4 -- 3 syllables, falling pitch (statement contour)
+    {210.0f, 150}, {0.0f, 50}, {180.0f, 140}, {0.0f, 50}, {150.0f, 220}, {0.0f, 300},
+    // "word" 5 -- 2 short clipped syllables, higher (female-range) pitch
+    {240.0f, 90}, {0.0f, 40}, {250.0f, 90}, {0.0f, 260},
+    // "word" 6 -- 3 syllables, mid pitch, longer final syllable (sentence-final lengthening)
+    {170.0f, 130}, {0.0f, 50}, {190.0f, 130}, {0.0f, 50}, {160.0f, 320}, {0.0f, 400},
+    // "word" 7 -- lower register close, 2 syllables
+    {130.0f, 160}, {0.0f, 60}, {120.0f, 260},
+    // "word" 8 -- rising then falling (emphatic), higher pitch
+    {200.0f, 100}, {0.0f, 40}, {235.0f, 110}, {0.0f, 40}, {190.0f, 200}, {0.0f, 300},
+    // "word" 9 -- closing word, low, longer sustained (sentence-final)
+    {140.0f, 180}, {0.0f, 60}, {125.0f, 400},
+    {0.0f, 350},  // sentence-boundary pause, longer than a word-boundary gap
+    // Second sentence -- similar contour, shifted register slightly
+    {155.0f, 140}, {0.0f, 50}, {175.0f, 130}, {0.0f, 50}, {160.0f, 170}, {0.0f, 220},
+    {195.0f, 140}, {0.0f, 50}, {210.0f, 160}, {0.0f, 260},
+    {165.0f, 120}, {0.0f, 40}, {185.0f, 120}, {0.0f, 40}, {205.0f, 130}, {0.0f, 40}, {235.0f, 210}, {0.0f, 320},
+    {145.0f, 200}, {0.0f, 60}, {130.0f, 380},
+};
+constexpr uint8_t SPEAKER_SPEECHTEST_NOTE_COUNT =
+    sizeof(SPEAKER_SPEECHTEST_NOTES) / sizeof(SPEAKER_SPEECHTEST_NOTES[0]);
+
 // --- Engine state -- currentBenchNotes/currentBenchNotesTotalMs are set
 // once by startSpeakerMelody()/startSpeakerChord() (via armBenchNotes()
 // below) and read (never mutated) by boundedNoteSequenceSample(), same
@@ -640,6 +719,100 @@ bool boundedNoteSequenceSample(uint32_t sampleIndex, int16_t *outSample) {
       float phaseIncrement = TWO_PI * note.frequencyHz / (float)I2S_SAMPLE_RATE;
       float rawPhase = fmodf((float)sampleIndex * phaseIncrement, TWO_PI);
       *outSample = (int16_t)(env * (currentAmplitudeFraction * 32767.0f) * sinf(rawPhase));
+      return true;
+    }
+    cursorMs += (float)note.durationMs;
+  }
+  *outSample = 0;  // unreachable given the tMs bound above; safe fallback
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+// 'speaker musictest' engine -- like BenchNote/boundedNoteSequenceSample()
+// above (bounded, non-looping, one generic engine + one table), but each
+// note also carries its own amplitudeScale, multiplied against the current
+// normal speaker volume ("changing dynamics" -- forte/mezzo-forte/piano
+// relative to whatever volume the user has selected). This is the one
+// diagnostic in this file that needs per-note amplitude, which is why it
+// gets its own small struct/table/engine instead of extending BenchNote
+// (extending BenchNote would mean touching every existing melody/chord
+// table entry, an unrelated risk for an unrelated feature). ---
+// ----------------------------------------------------------------------------
+struct DynamicNote {
+  float frequencyHz;      // 0 = rest (silence for this note's duration)
+  uint32_t durationMs;
+  float amplitudeScale;   // multiplies currentAmplitudeFraction (the live selected speaker volume)
+};
+
+// --- 'speaker musictest': an ORIGINAL short musical diagnostic, NOT a
+// copyrighted melody -- low notes (sustained, moderate dynamics), a run of
+// short transient-attack high notes (full dynamics), a flowing mid section
+// (softer dynamics), a bright high section (building dynamics), and a
+// closing transient-plus-sustained-finish phrase, ~11s total. ---
+constexpr DynamicNote SPEAKER_MUSICTEST_NOTES[] = {
+    // Low section -- sustained, moderate dynamics
+    {130.81f, 500, 0.7f}, {0.0f, 100, 1.0f},   // C3
+    {164.81f, 500, 0.7f}, {0.0f, 100, 1.0f},   // E3
+    {196.00f, 700, 0.8f}, {0.0f, 250, 1.0f},   // G3
+    // Transient attacks -- short, punchy, full dynamics
+    {523.25f, 90, 1.0f}, {0.0f, 60, 1.0f},     // C5
+    {659.25f, 90, 1.0f}, {0.0f, 60, 1.0f},     // E5
+    {783.99f, 90, 1.0f}, {0.0f, 300, 1.0f},    // G5
+    // Mid section -- flowing, softer dynamics
+    {261.63f, 400, 0.6f},                       // C4
+    {329.63f, 400, 0.6f},                       // E4
+    {392.00f, 400, 0.6f},                       // G4
+    {523.25f, 600, 0.75f}, {0.0f, 300, 1.0f},  // C5
+    // High section -- bright, building dynamics
+    {880.00f, 350, 0.85f},                      // A5
+    {783.99f, 350, 0.85f},                      // G5
+    {659.25f, 350, 0.90f},                      // E5
+    {523.25f, 900, 1.0f}, {0.0f, 400, 1.0f},   // C5, full dynamics finish
+    // Closing transient punches with rests (dynamic contrast) then a
+    // sustained full-dynamics finish
+    {392.00f, 120, 1.0f}, {0.0f, 150, 1.0f},   // G4
+    {523.25f, 120, 1.0f}, {0.0f, 150, 1.0f},   // C5
+    {440.00f, 300, 0.8f}, {0.0f, 80, 1.0f},    // A4
+    {523.25f, 300, 0.8f}, {0.0f, 80, 1.0f},    // C5
+    {659.25f, 300, 0.85f}, {0.0f, 80, 1.0f},   // E5
+    {880.00f, 1200, 1.0f},                      // A5, sustained finish
+};
+constexpr uint8_t SPEAKER_MUSICTEST_NOTE_COUNT =
+    sizeof(SPEAKER_MUSICTEST_NOTES) / sizeof(SPEAKER_MUSICTEST_NOTES[0]);
+
+// --- Engine state -- currentMusicTestNotes/currentMusicTestTotalMs are set
+// once by startSpeakerMusicTest() (via armMusicTestNotes() below) and read
+// (never mutated) by dynamicNoteSequenceSample(), same discipline as this
+// file's other "currentX" test parameters. ---
+const DynamicNote *currentMusicTestNotes = nullptr;
+uint8_t currentMusicTestNoteCount = 0;
+uint32_t currentMusicTestTotalMs = 0;
+
+bool dynamicNoteSequenceSample(uint32_t sampleIndex, int16_t *outSample) {
+  if (currentMusicTestNotes == nullptr || currentMusicTestTotalMs == 0) {
+    *outSample = 0;
+    return false;
+  }
+  float tMs = (float)sampleIndex * 1000.0f / (float)I2S_SAMPLE_RATE;
+  if (tMs >= (float)currentMusicTestTotalMs) return false;  // bounded -- never wraps
+
+  float cursorMs = 0.0f;
+  for (uint8_t i = 0; i < currentMusicTestNoteCount; i++) {
+    const DynamicNote &note = currentMusicTestNotes[i];
+    if (tMs < cursorMs + (float)note.durationMs) {
+      if (note.frequencyHz <= 0.0f) {
+        *outSample = 0;  // rest
+        return true;
+      }
+      float tWithinNote = tMs - cursorMs;
+      // Same ramp convention as boundedNoteSequenceSample() above (capped at
+      // 40% of the note's own duration) -- the shortest transient-attack
+      // notes here (90ms) still get an audible sustained portion.
+      float rampMs = fminf((float)SPEAKER_BENCH_NOTE_RAMP_MS, (float)note.durationMs * 0.4f);
+      float env = segmentEnvelope(tWithinNote, (float)note.durationMs, rampMs);
+      float phaseIncrement = TWO_PI * note.frequencyHz / (float)I2S_SAMPLE_RATE;
+      float rawPhase = fmodf((float)sampleIndex * phaseIncrement, TWO_PI);
+      *outSample = (int16_t)(env * (currentAmplitudeFraction * note.amplitudeScale * 32767.0f) * sinf(rawPhase));
       return true;
     }
     cursorMs += (float)note.durationMs;
@@ -729,6 +902,7 @@ bool sampleForIndex(uint32_t sampleIndex, int16_t *outSample) {
     case TestKind::NOISE: return noiseSample(sampleIndex, outSample);
     case TestKind::SONG: return songSample(sampleIndex, outSample);
     case TestKind::BENCH_NOTES: return boundedNoteSequenceSample(sampleIndex, outSample);
+    case TestKind::MUSICTEST_NOTES: return dynamicNoteSequenceSample(sampleIndex, outSample);
     // FMT_DIAG never reaches here -- generateChunk() special-cases it to
     // fmtDiagSample() before calling sampleForIndex() at all (see that
     // function's own comment). This case exists only to keep the switch
@@ -760,6 +934,7 @@ void startTest(TestKind kind, float freqHz, uint32_t durationMs, uint32_t rampMs
   // "every start*Test() interrupts whatever's playing" philosophy this file
   // already applies to every other test.
   if (volActive && !volLadderArmingInProgress) abortVolLadderIfActive(false);
+  clearActiveChecks();  // any test start ends an active silencecheck/carriercheck, same interruption philosophy
 
   currentTestKind = kind;
   currentFrequencyHz = freqHz;
@@ -787,6 +962,7 @@ void startSongPlayback(const Song &song) {
   // never guarded by volLadderArmingInProgress -- any music1-4 command
   // always interrupts and aborts an active ladder run.
   if (volActive) abortVolLadderIfActive(false);
+  clearActiveChecks();
   currentSong = &song;
   songTotalDurationMs = computeSongDurationMs(song);
   currentTestKind = TestKind::SONG;
@@ -1007,7 +1183,7 @@ static void armBenchNotes(const BenchNote *notes, uint8_t count) {
 // Automatic volume-ladder diagnostic ORCHESTRATION ('speaker voltest'/
 // 'volquick'/'volstop'/'volstatus') -- see the DATA block (VolLadderStepDef/
 // VOLTEST_FULL_STEPS/VOLTEST_QUICK_STEPS/volActive/etc., declared inside the
-// namespace above, near benchVolumeIndex) for the full design rationale.
+// namespace above, near speakerVolumeIndex) for the full design rationale.
 // Placed here, before initSpeakerTest()/updateSpeakerTest(), so
 // updateVolLadder() is defined before updateSpeakerTest() calls it.
 // ----------------------------------------------------------------------------
@@ -1247,6 +1423,7 @@ void initSpeakerTest() {
   printGpio16Routing("immediately after initSpeakerTest()");
 
   speakerReady = true;
+  printSpeakerVolume();  // V1.1 boot default -- "[SPEAKER] Volume: 70%" (not persisted across reboot)
   // initCompleteMs is deliberately NOT set here -- see firstUpdateSeen's
   // comment above; it's latched on the first updateSpeakerTest() call
   // instead, so the auto-demo countdown reflects real loop() time.
@@ -1279,6 +1456,18 @@ void updateSpeakerTest(unsigned long now) {
 
   feedSpeakerChunk();
   updateVolLadder(now);  // no-op unless 'speaker voltest'/'volquick' is active -- see its own comment
+
+  // Periodic "still active" reminder for 'speaker silencecheck'/
+  // 'carriercheck' -- neither has a fixed duration, so this is the only
+  // ongoing serial evidence that the check is still running (vs. having
+  // silently ended) while a human listens.
+  if ((silenceCheckActive || carrierCheckActive) &&
+      (now - lastSilenceCheckStatusMs) >= SPEAKER_SILENCECHECK_STATUS_INTERVAL_MS) {
+    lastSilenceCheckStatusMs = now;
+    unsigned long elapsedS = (now - silenceCheckStartMs) / 1000;
+    Serial.printf("[SPEAKER] %s still active (%lus elapsed) -- 'speaker stop' to end\n",
+                  carrierCheckActive ? "Carrier check" : "Silence check", elapsedS);
+  }
 }
 
 void stopSpeakerTest() {
@@ -1288,12 +1477,15 @@ void stopSpeakerTest() {
   // SILENCE. Idempotent (no-op if no ladder is running).
   abortVolLadderIfActive(false);
   bool wasPlaying = (phase == SpeakerPhase::TONE_PLAYING);
+  bool wasChecking = silenceCheckActive || carrierCheckActive;
+  clearActiveChecks();
   phase = SpeakerPhase::SILENCE;
   toneSampleIndex = 0;
   diagCallsRemaining = 0;
   currentSong = nullptr;  // defensive tidiness -- harmless either way (static data, never dangling)
   songTotalDurationMs = 0;
   if (wasPlaying) Serial.println(F("[SPEAKER] Emergency stop -- digital silence active"));
+  else if (wasChecking) Serial.println(F("[SPEAKER] Emergency stop -- silence/carrier check ended"));
 }
 
 bool startSpeakerTestTone() {
@@ -1424,23 +1616,24 @@ bool startSpeakerBringupTone() {
 bool stopSpeakerBringupTone() { return stopSpeakerMusic(); }
 
 // ----------------------------------------------------------------------------
-// Gain/volume bring-up test bench ('speaker t'/'1'/'2'/'3'/'v'/'+'/'-'/'h') --
-// see the SPEAKER_BENCH_* constants in Config.h and this file's own header
-// comment for why these live under the 'speaker' word prefix rather than
-// bare single-char tokens. Shares startTest()'s scheduler/ramp/silence
-// machinery with every test above -- no second I2S write path.
+// Bring-up test bench ('speaker t'/'1'/'2'/'3'/'volume'/'v'/'+'/'-'/'h') --
+// see the SPEAKER_BENCH_*/SPEAKER_VOLUME_* constants in Config.h and this
+// file's own header comment for why these live under the 'speaker' word
+// prefix rather than bare single-char tokens. Shares startTest()'s
+// scheduler/ramp/silence machinery with every test above -- no second I2S
+// write path.
 // ----------------------------------------------------------------------------
 
 // Common entry point for 't'/'1'/'2'/'3' -- looks up the preset table,
 // prints the exact requested confirmation line, then hands off to the
-// existing startTest() scheduler at the current bench volume.
+// existing startTest() scheduler at the current normal speaker volume.
 static bool startSpeakerBenchPreset(uint8_t presetIndex) {
   if (!speakerReady) {
     Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
     return false;
   }
   const SpeakerBenchPreset &preset = SPEAKER_BENCH_PRESETS[presetIndex];
-  float amplitudeFraction = SPEAKER_BENCH_VOLUME_STEPS_FRACTION[benchVolumeIndex];
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
   Serial.printf("[SPEAKER] Tone: %.0f Hz | amplitude=%.0f%% | duration=%lu ms\n", (double)preset.frequencyHz,
                 (double)(amplitudeFraction * 100.0f), (unsigned long)preset.durationMs);
   char label[16];
@@ -1455,39 +1648,69 @@ bool startSpeakerBench1() { return startSpeakerBenchPreset(1); }
 bool startSpeakerBench2() { return startSpeakerBenchPreset(2); }
 bool startSpeakerBench3() { return startSpeakerBenchPreset(3); }
 
-void printSpeakerBenchVolume() {
-  Serial.printf("[SPEAKER] Bench volume: %.0f%% (step %d/%d)\n",
-                (double)(SPEAKER_BENCH_VOLUME_STEPS_FRACTION[benchVolumeIndex] * 100.0f), benchVolumeIndex + 1,
-                SPEAKER_BENCH_VOLUME_STEP_COUNT);
+// Loudness label for the exact format requested for V1.1: "[SPEAKER]
+// Volume: 70%" at 35-70%, then "(LOUD)"/"(HIGH)"/"(MAX)" at 80/90/100%
+// specifically -- not a general >=threshold rule, so a future ladder change
+// doesn't silently start labeling an unintended step.
+static const char *speakerVolumeLabel(float fraction) {
+  if (fabsf(fraction - 1.00f) < 0.001f) return " (MAX)";
+  if (fabsf(fraction - 0.90f) < 0.001f) return " (HIGH)";
+  if (fabsf(fraction - 0.80f) < 0.001f) return " (LOUD)";
+  return "";
 }
 
-void speakerBenchVolumeUp() {
-  if (benchVolumeIndex + 1 < SPEAKER_BENCH_VOLUME_STEP_COUNT) benchVolumeIndex++;
-  else Serial.println(F("[SPEAKER] Bench volume already at maximum (25%)"));
-  printSpeakerBenchVolume();
+void printSpeakerVolume() {
+  float fraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
+  Serial.printf("[SPEAKER] Volume: %.0f%%%s\n", (double)(fraction * 100.0f), speakerVolumeLabel(fraction));
 }
 
-void speakerBenchVolumeDown() {
-  if (benchVolumeIndex > 0) benchVolumeIndex--;
-  else Serial.println(F("[SPEAKER] Bench volume already at minimum (2%)"));
-  printSpeakerBenchVolume();
+void speakerVolumeUp() {
+  if (speakerVolumeIndex + 1 < SPEAKER_VOLUME_STEP_COUNT) speakerVolumeIndex++;
+  else Serial.println(F("[SPEAKER] Volume already at maximum (100%)"));
+  printSpeakerVolume();
+}
+
+void speakerVolumeDown() {
+  if (speakerVolumeIndex > 0) speakerVolumeIndex--;
+  else Serial.println(F("[SPEAKER] Volume already at minimum (35%)"));
+  printSpeakerVolume();
+}
+
+bool setSpeakerVolumePercent(uint8_t percent) {
+  for (uint8_t i = 0; i < SPEAKER_VOLUME_STEP_COUNT; i++) {
+    if ((uint8_t)lroundf(SPEAKER_VOLUME_STEPS_FRACTION[i] * 100.0f) == percent) {
+      speakerVolumeIndex = i;
+      printSpeakerVolume();
+      return true;
+    }
+  }
+  Serial.printf("[SPEAKER] %u%% is not a supported volume level -- use one of: 35/50/60/70/80/90/100\n",
+                (unsigned)percent);
+  return false;
 }
 
 void printSpeakerBenchHelp() {
   Serial.println(F("[SPEAKER] Bring-up test bench commands:"));
-  Serial.println(F("[SPEAKER]   speaker t    = 440 Hz, 750 ms, at current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker 1    = 220 Hz, 750 ms, at current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker 2    = 440 Hz, 750 ms, at current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker 3    = 880 Hz, 500 ms, at current bench volume"));
+  Serial.println(F("[SPEAKER]   speaker t    = 440 Hz, 750 ms, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker 1    = 220 Hz, 750 ms, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker 2    = 440 Hz, 750 ms, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker 3    = 880 Hz, 500 ms, at current volume"));
   Serial.println(F("[SPEAKER]   speaker stop = immediate stop, continuous digital silence"));
-  Serial.println(F("[SPEAKER]   speaker v    = print current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker +    = step volume up (2/5/8/12/18/25%, capped at 25%)"));
-  Serial.println(F("[SPEAKER]   speaker -    = step volume down (capped at 2%)"));
+  Serial.println(F("[SPEAKER]   speaker volume            = print current volume"));
+  Serial.println(F("[SPEAKER]   speaker volume <percent>  = set volume (35/50/60/70/80/90/100)"));
+  Serial.println(F("[SPEAKER]   speaker volume up|down    = step volume (alias: speaker +|-)"));
+  Serial.println(F("[SPEAKER]   speaker v    = alias for 'speaker volume'"));
   Serial.println(F("[SPEAKER]   speaker h    = this help"));
-  Serial.println(F("[SPEAKER]   speaker sweep  = 150->3000 Hz sweep, ~6s, at current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker melody = original diagnostic melody, ~9s, at current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker chord  = C4-E4-G4-C5 arpeggio up/down, ~5s, at current bench volume"));
-  Serial.println(F("[SPEAKER]   speaker noise  = white noise, 2s, capped at 10% regardless of bench volume"));
+  Serial.println(F("[SPEAKER]   speaker sweep      = 150->3000 Hz sweep, ~6s, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker melody     = original diagnostic melody, ~9s, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker chord      = C4-E4-G4-C5 arpeggio up/down, ~5s, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker lowmidhigh = 150/440/1500 Hz in sequence, at current volume"));
+  Serial.println(F("[SPEAKER]   speaker speechtest = original synthetic speech-like diagnostic, ~10s"));
+  Serial.println(F("[SPEAKER]   speaker musictest  = original short musical diagnostic, ~11s"));
+  Serial.println(F("[SPEAKER]   speaker noise  = white noise, 2s, capped at 10% regardless of volume"));
+  Serial.println(F("[SPEAKER]   speaker silencecheck = continuous digital zero until 'speaker stop'"));
+  Serial.println(F("[SPEAKER]   speaker carriercheck = same, plus I2S clock/pin diagnostics"));
+  Serial.println(F("[SPEAKER]   speaker isolate on|off|status = diagnostic motor-stop + LED-mute mode"));
   Serial.println(F("[SPEAKER]   speaker voltest   = automatic 2->100% multi-tone volume ladder"));
   Serial.println(F("[SPEAKER]   speaker volquick  = shorter automatic volume ladder"));
   Serial.println(F("[SPEAKER]   speaker volstop   = abort volume test and return to silence"));
@@ -1564,7 +1787,7 @@ bool startSpeakerBenchSweep() {
     Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
     return false;
   }
-  float amplitudeFraction = SPEAKER_BENCH_VOLUME_STEPS_FRACTION[benchVolumeIndex];
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
   Serial.printf("[SPEAKER] Sweep: %.0f -> %.0f Hz | %lus | amplitude=%.0f%%\n", (double)SPEAKER_SWEEP_START_HZ,
                 (double)SPEAKER_SWEEP_END_HZ, (unsigned long)(SPEAKER_BENCH_SWEEP_DURATION_MS / 1000),
                 (double)(amplitudeFraction * 100.0f));
@@ -1580,7 +1803,7 @@ bool startSpeakerBenchMelody() {
     Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
     return false;
   }
-  float amplitudeFraction = SPEAKER_BENCH_VOLUME_STEPS_FRACTION[benchVolumeIndex];
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
   Serial.printf("[SPEAKER] Melody diagnostic started | amplitude=%.0f%%\n", (double)(amplitudeFraction * 100.0f));
   armBenchNotes(SPEAKER_BENCH_MELODY_NOTES, SPEAKER_BENCH_MELODY_NOTE_COUNT);
   startTest(TestKind::BENCH_NOTES, 0.0f, currentBenchNotesTotalMs, 0, amplitudeFraction, "melody diagnostic");
@@ -1592,7 +1815,7 @@ bool startSpeakerBenchChord() {
     Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
     return false;
   }
-  float amplitudeFraction = SPEAKER_BENCH_VOLUME_STEPS_FRACTION[benchVolumeIndex];
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
   Serial.println(F("[SPEAKER] Chord/arpeggio diagnostic started"));
   armBenchNotes(SPEAKER_BENCH_CHORD_NOTES, SPEAKER_BENCH_CHORD_NOTE_COUNT);
   startTest(TestKind::BENCH_NOTES, 0.0f, currentBenchNotesTotalMs, 0, amplitudeFraction, "chord/arpeggio diagnostic");
@@ -1608,11 +1831,112 @@ bool startSpeakerBenchNoise() {
   // louder than the cap, and never louder than whatever the user's bench
   // volume is currently set to, whichever is lower.
   float amplitudeFraction =
-      fminf(SPEAKER_BENCH_VOLUME_STEPS_FRACTION[benchVolumeIndex], SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION);
+      fminf(SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex], SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION);
   Serial.printf("[SPEAKER] Noise diagnostic started | capped=%.0f%%\n",
                 (double)(SPEAKER_BENCH_NOISE_MAX_AMPLITUDE_FRACTION * 100.0f));
   startTest(TestKind::NOISE, 0.0f, SPEAKER_BENCH_NOISE_DURATION_MS, NOISE_RAMP_MS, amplitudeFraction,
             "noise diagnostic");
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+// V1.1 buzz/noise isolation diagnostics ('speaker silencecheck'/
+// 'carriercheck') -- see include/SpeakerTest.h for the full rationale. Both
+// force phase back to SILENCE (continuous digital zero, the same signal
+// already transmitted between every test in this file) and hold it there
+// under a human-readable label until 'speaker stop'/'stopmusic'/'k' ends it
+// -- no fixed duration, no new I2S write path.
+// ----------------------------------------------------------------------------
+
+bool startSpeakerSilenceCheck() {
+  if (!speakerReady) {
+    Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
+    return false;
+  }
+  stopSpeakerMusic();  // clears any playing test/ladder, forces phase back to SILENCE, prints "Stopped"
+  silenceCheckActive = true;
+  carrierCheckActive = false;
+  silenceCheckStartMs = millis();
+  lastSilenceCheckStatusMs = silenceCheckStartMs;
+  Serial.println(F("[SPEAKER] Silence check ACTIVE -- true digital silence (no tone), continuous"));
+  Serial.println(F("[SPEAKER] Microphone capture continues normally. Issue 'speaker stop' to end."));
+  return true;
+}
+
+bool startSpeakerCarrierCheck() {
+  if (!speakerReady) {
+    Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
+    return false;
+  }
+  stopSpeakerMusic();
+  carrierCheckActive = true;
+  silenceCheckActive = false;
+  silenceCheckStartMs = millis();
+  lastSilenceCheckStatusMs = silenceCheckStartMs;
+  Serial.println(F("[SPEAKER] Carrier check ACTIVE -- I2S clocks running, zero samples only (no tone)"));
+  printSharedI2SStatus();
+  printGpio16Routing("carrier check");
+  Serial.printf("[SPEAKER DIAG] i2s_get_clk(I2S_NUM_0)=%.1f Hz\n", i2s_get_clk(I2S_PORT));
+  Serial.println(F("[SPEAKER] Microphone capture continues normally. Issue 'speaker stop' to end."));
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+// V1.1 realistic-content diagnostics -- 'speaker lowmidhigh'/'speechtest'/
+// 'musictest'. lowmidhigh/speechtest reuse boundedNoteSequenceSample() (the
+// SAME engine 'speaker melody'/'chord' already use, via armBenchNotes());
+// musictest uses its own small dynamicNoteSequenceSample() engine (see that
+// function's own comment for why). All three read the CURRENT normal
+// speaker volume live at start time, same as melody/chord/sweep.
+// ----------------------------------------------------------------------------
+
+bool startSpeakerLowMidHigh() {
+  if (!speakerReady) {
+    Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
+    return false;
+  }
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
+  Serial.printf("[SPEAKER] Low/mid/high diagnostic started | 150/440/1500 Hz | amplitude=%.0f%%\n",
+                (double)(amplitudeFraction * 100.0f));
+  armBenchNotes(SPEAKER_LOWMIDHIGH_NOTES, SPEAKER_LOWMIDHIGH_NOTE_COUNT);
+  startTest(TestKind::BENCH_NOTES, 0.0f, currentBenchNotesTotalMs, 0, amplitudeFraction, "low/mid/high diagnostic");
+  return true;
+}
+
+bool startSpeakerSpeechTest() {
+  if (!speakerReady) {
+    Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
+    return false;
+  }
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
+  Serial.printf("[SPEAKER] Speech-like diagnostic started (original synthetic content) | amplitude=%.0f%%\n",
+                (double)(amplitudeFraction * 100.0f));
+  armBenchNotes(SPEAKER_SPEECHTEST_NOTES, SPEAKER_SPEECHTEST_NOTE_COUNT);
+  startTest(TestKind::BENCH_NOTES, 0.0f, currentBenchNotesTotalMs, 0, amplitudeFraction, "speech-like diagnostic");
+  return true;
+}
+
+// Arms dynamicNoteSequenceSample()'s table/count/total-duration state, same
+// pattern as armBenchNotes() above but for the amplitude-carrying DynamicNote
+// shape 'speaker musictest' needs.
+static void armMusicTestNotes(const DynamicNote *notes, uint8_t count) {
+  currentMusicTestNotes = notes;
+  currentMusicTestNoteCount = count;
+  uint32_t total = 0;
+  for (uint8_t i = 0; i < count; i++) total += notes[i].durationMs;
+  currentMusicTestTotalMs = total;
+}
+
+bool startSpeakerMusicTest() {
+  if (!speakerReady) {
+    Serial.println(F("[SPEAKER] Refused -- I2S TX not initialized"));
+    return false;
+  }
+  float amplitudeFraction = SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex];
+  Serial.printf("[SPEAKER] Music diagnostic started (original synthetic content) | amplitude=%.0f%% (peak)\n",
+                (double)(amplitudeFraction * 100.0f));
+  armMusicTestNotes(SPEAKER_MUSICTEST_NOTES, SPEAKER_MUSICTEST_NOTE_COUNT);
+  startTest(TestKind::MUSICTEST_NOTES, 0.0f, currentMusicTestTotalMs, 0, amplitudeFraction, "music diagnostic");
   return true;
 }
 
@@ -1658,14 +1982,62 @@ bool stopSpeakerMusic() {
   // Idempotent (no-op if no ladder is running); harmless if the caller
   // already called this directly beforehand.
   abortVolLadderIfActive(false);
+  bool wasChecking = silenceCheckActive || carrierCheckActive;
+  clearActiveChecks();
   phase = SpeakerPhase::SILENCE;
   toneSampleIndex = 0;
   diagCallsRemaining = 0;
   currentSong = nullptr;
   songTotalDurationMs = 0;
+  if (wasChecking) Serial.println(F("[SPEAKER] Silence/carrier check ended"));
   Serial.println(F("[SPEAKER] Stopped"));
   return true;
 }
+
+// ----------------------------------------------------------------------------
+// V1.1 noise-isolation mode ('speaker isolate on'/'off'/'status') -- see the
+// SPEAKER_ISOLATE_* comment in Config.h for the full rationale and its
+// "best-effort, not a hard interlock" caveat. Calls only MotorDriver's own
+// exported motorStop() and Controls.h's existing isMuted()/setMuted() --
+// the SAME public APIs every other behavior layer/diagnostic already uses,
+// not a new owner of either resource (see AGENTS.md's single-owner table).
+// ----------------------------------------------------------------------------
+
+namespace {
+bool speakerIsolateActive = false;
+bool speakerIsolatePriorMuteState = false;
+}  // namespace
+
+void speakerIsolateOn() {
+  if (speakerIsolateActive) {
+    Serial.println(F("[SPEAKER ISOLATE] Already ON"));
+    return;
+  }
+  speakerIsolatePriorMuteState = isMuted();
+  motorStop();
+  setMuted(true);
+  speakerIsolateActive = true;
+  Serial.println(F("[SPEAKER ISOLATE] ON -- motor commanded stopped, LEDs muted (diagnostic only)"));
+  Serial.println(
+      F("[SPEAKER ISOLATE] NOTE: best-effort, not a hard interlock -- an independently-active motor "
+        "behavior (e.g. MusicMotorController) can still re-engage the motor during this window"));
+}
+
+void speakerIsolateOff() {
+  if (!speakerIsolateActive) {
+    Serial.println(F("[SPEAKER ISOLATE] Already OFF"));
+    return;
+  }
+  setMuted(speakerIsolatePriorMuteState);
+  speakerIsolateActive = false;
+  Serial.println(F("[SPEAKER ISOLATE] OFF -- prior LED mute state restored"));
+}
+
+void printSpeakerIsolateStatus() {
+  Serial.printf("[SPEAKER ISOLATE] active=%d\n", speakerIsolateActive ? 1 : 0);
+}
+
+bool isSpeakerIsolateActive() { return speakerIsolateActive; }
 
 bool isSpeakerReady() { return speakerReady; }
 
@@ -1681,4 +2053,7 @@ void printSpeakerTestStatus() {
     Serial.printf("[SPEAKER] music: song=\"%s\" loop=%lu songTotalDurationMs=%lu\n", currentSong->name,
                   (unsigned long)lastPrintedMusicLoop, (unsigned long)songTotalDurationMs);
   }
+  Serial.printf("[SPEAKER] volume=%.0f%% silenceCheck=%d carrierCheck=%d isolate=%d\n",
+                (double)(SPEAKER_VOLUME_STEPS_FRACTION[speakerVolumeIndex] * 100.0f), silenceCheckActive ? 1 : 0,
+                carrierCheckActive ? 1 : 0, speakerIsolateActive ? 1 : 0);
 }

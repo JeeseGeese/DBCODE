@@ -79,6 +79,25 @@ speaker playback + full-duty `MusicMotorController` + full LED
 rendering, all simultaneously, under sustained load (see
 `KNOWN_LIMITATIONS.md`).
 
+## Clock source: APLL is not available on this chip/framework (verified)
+
+`initSharedI2S()` sets `.use_apll = false`. Investigated during the V1.1
+speaker buzz-diagnosis sprint whether `use_apll=true` was a plausible,
+untested contributor to clock-quality artifacts at this bus's fixed
+16kHz/32-bit/stereo/1.024MHz BCLK configuration. Verified directly
+against this project's installed framework HAL source (not guessed):
+`hal/esp32s3/include/hal/i2s_ll.h`'s `i2s_ll_tx_clk_set_src()`/
+`i2s_ll_rx_clk_set_src()` both hardcode the clock-select field to `2`
+(D2CLK) and ignore their `src` argument entirely, with the comment
+"ESP32-S3 only support I2S_CLK_D2CLK"; `soc_caps.h` for esp32s3 also
+does not define `SOC_I2S_SUPPORTS_APLL` (present on the original ESP32,
+absent here). APLL is simply not wired to this SoC's I2S peripheral in
+this framework version — `use_apll` is part of the driver's cross-chip
+struct but has no effect here. No APLL A/B toggle was implemented as a
+result (it would be a no-op, not a real test) — see
+`docs/current/SPEAKER.md`'s "APLL clock-quality investigation" section
+and `SharedI2S.cpp`'s `.use_apll = false` comment for the full citation.
+
 ## For a future Raspberry Pi audio handoff
 
 If a future Raspberry Pi integration needs to inject or receive PCM

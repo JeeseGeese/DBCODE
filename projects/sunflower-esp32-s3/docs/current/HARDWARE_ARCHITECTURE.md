@@ -17,7 +17,7 @@ board.
 
 | Peripheral | Summary | Detail doc |
 |---|---|---|
-| 58x WS2812B-compatible LEDs | single data line, GPIO4 | `LED_ENGINE.md`, `GPIO_MAP.md` |
+| 36x WS2812B-compatible LEDs (corrected 2026-08-08, physically confirmed; was 58) | single data line, GPIO4 | `LED_ENGINE.md`, `GPIO_MAP.md` |
 | 4x momentary pushbuttons | `INPUT_PULLUP`, no external resistors | `BUTTONS.md` |
 | INMP441 I2S MEMS microphone | 16kHz, LEFT channel | `MICROPHONE.md`, `I2S_ARCHITECTURE.md` |
 | MAX98357A I2S amplifier + 40mm/4Ω/3W speaker | shares the mic's I2S bus | `SPEAKER.md`, `I2S_ARCHITECTURE.md` |
@@ -34,7 +34,7 @@ board.
   (LED data)   10/11/17/5    (full-duplex,     (DRV8833      Raspberry Pi
       |         INPUT_      shared master)      IN1/IN2)      companion
       v          PULLUP          |                 |
-  58x WS2812        |     +------+------+           v
+  36x WS2812        |     +------+------+           v
   (5V rail,         v     |             |      brushed DC
    common      Mode/Mute/ BCLK=6/WS=7   |        motor
    ground)     Bright/   |             |

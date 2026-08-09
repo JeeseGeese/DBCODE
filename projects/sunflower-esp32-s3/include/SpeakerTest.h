@@ -120,14 +120,29 @@ bool startSpeakerBench2();
 // 'speaker 3': 880Hz, 500ms, at the current bench volume (SPEAKER_BENCH_PRESETS[3]).
 bool startSpeakerBench3();
 
-// 'speaker v': prints the current bench amplitude (step index + percent).
-void printSpeakerBenchVolume();
-// 'speaker +': steps to the next-louder entry in SPEAKER_BENCH_VOLUME_STEPS_FRACTION,
-// clamped at the last (loudest, 25%) step -- never full-scale. Prints the new value.
-void speakerBenchVolumeUp();
-// 'speaker -': steps to the next-quieter entry, clamped at the first (2%) step.
-// Prints the new value.
-void speakerBenchVolumeDown();
+// --- V1.1 normal-use volume model (see SPEAKER_VOLUME_* in Config.h) --
+// 'speaker t'/'1'/'2'/'3'/'sweep'/'melody'/'chord'/'lowmidhigh'/'speechtest'/
+// 'musictest' all read this SAME live volume, one model for normal speaker
+// output. 'speaker v'/'+'/'-' are aliases for the three functions below --
+// same underlying volume, kept for continuity with the pre-V1.1 bring-up
+// bench naming. ---
+
+// 'speaker volume' / 'speaker v': prints the current volume (step index +
+// percent), with a loudness label at 80/90/100% -- see
+// SPEAKER_VOLUME_STEPS_FRACTION in Config.h.
+void printSpeakerVolume();
+// 'speaker volume up' / 'speaker +': steps to the next-louder entry in
+// SPEAKER_VOLUME_STEPS_FRACTION, clamped at the last (100%) step. Prints
+// the new value.
+void speakerVolumeUp();
+// 'speaker volume down' / 'speaker -': steps to the next-quieter entry,
+// clamped at the first (35%) step. Prints the new value.
+void speakerVolumeDown();
+// 'speaker volume <percent>': sets the volume directly to one of the
+// supported ladder steps (35/50/60/70/80/90/100). Returns false and prints
+// a rejection message (listing the supported values) for any other
+// percent -- never rounds or clamps to the nearest supported step.
+bool setSpeakerVolumePercent(uint8_t percent);
 // 'speaker h': prints this bench's own command list (distinct from the
 // general 'h'/printHelp()).
 void printSpeakerBenchHelp();
@@ -254,6 +269,68 @@ bool startSpeakerMusic4();
 // playing. Distinct from stopSpeakerTest() (used only by 'k'/emergency
 // stop, which prints its own "Emergency stop" message instead).
 bool stopSpeakerMusic();
+
+// --- V1.1 buzz/noise isolation diagnostics -- 'speaker silencecheck'/
+// 'carriercheck'. Neither has a fixed duration; both run until explicitly
+// ended by 'speaker stop'/'stopmusic'/'k' (same stop paths as every other
+// test in this file) -- "user-controlled period", not a timer. Never
+// touches LEDs or the microphone; AudioAnalyzer.cpp's RX path is
+// unaffected. ---
+
+// 'speaker silencecheck': forces continuous digital zero (no synthesized
+// tone) and prints that true digital silence is active. This is actually
+// the SAME signal the speaker already transmits between tests (phase ==
+// SILENCE) -- this command exists so a human can deliberately hold that
+// state and listen for residual buzz/hiss with zero tone playing, rather
+// than catching it only in the gap between two commands.
+bool startSpeakerSilenceCheck();
+// 'speaker carriercheck': same digital-zero signal as silencecheck, plus
+// explicit reporting of the I2S clock/pin state (i2s_get_clk(), GPIO16
+// routing) -- for distinguishing "I2S clocks active + zero samples" from
+// "actual audio content" when judging whether a noise source is digital/
+// clock-related versus something else.
+bool startSpeakerCarrierCheck();
+
+// 'speaker lowmidhigh': 150/440/1500Hz in sequence, equal duration and
+// fades, at the current normal speaker volume -- reuses the same bounded
+// note-sequence engine 'speaker melody'/'chord' already use (see
+// SpeakerTest.cpp's boundedNoteSequenceSample()), not a new engine.
+bool startSpeakerLowMidHigh();
+
+// 'speaker speechtest': an ORIGINAL synthetic speech-like diagnostic (NOT
+// copyrighted audio) -- alternating short "syllable" notes across the
+// fundamental adult-speech frequency range with syllable/word-boundary
+// gaps, at the current normal speaker volume, ~10s. Reuses the same
+// bounded note-sequence engine as 'speaker melody'/'chord'/'lowmidhigh'.
+bool startSpeakerSpeechTest();
+
+// 'speaker musictest': an ORIGINAL short musical diagnostic (NOT a
+// copyrighted melody) -- low/mid/high notes, rests, and both short
+// transient-attack notes and longer sustained notes with per-note
+// amplitude variation ("changing dynamics"), at the current normal speaker
+// volume, ~10-15s. Its own small engine (dynamicNoteSequenceSample() in
+// SpeakerTest.cpp) since this is the one diagnostic in this file that
+// needs per-note amplitude, not just per-note frequency/duration.
+bool startSpeakerMusicTest();
+
+// --- V1.1 noise-isolation mode -- 'speaker isolate on'/'off'/'status'. See
+// the SPEAKER_ISOLATE_* comment in Config.h for the full rationale and its
+// "best-effort, not a hard interlock" caveat. Diagnostic-only; never
+// activated automatically by any other command in this file. ---
+
+// 'speaker isolate on': commands the motor stopped once (MotorDriver's own
+// motorStop()) and mutes LEDs (Controls.h's setMuted(true)), saving the
+// prior mute state to restore later. No-op (prints already-on) if already
+// active.
+void speakerIsolateOn();
+// 'speaker isolate off': restores the LED mute state saved by
+// speakerIsolateOn(). Does not re-engage the motor (nothing in this file
+// ever drives the motor forward/reverse). No-op (prints already-off) if
+// not active.
+void speakerIsolateOff();
+// 'speaker isolate status': prints whether isolate mode is currently active.
+void printSpeakerIsolateStatus();
+bool isSpeakerIsolateActive();
 
 bool isSpeakerReady();
 

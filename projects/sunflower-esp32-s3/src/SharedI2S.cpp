@@ -58,6 +58,22 @@ bool initSharedI2S() {
       .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
       .dma_buf_count = 4,
       .dma_buf_len = 256,
+      // V1.1 buzz-diagnosis APLL investigation (see docs/current/SPEAKER.md):
+      // verified directly against this project's installed framework HAL
+      // source -- framework-arduinoespressif32/.../esp32s3/include/hal/
+      // esp32s3/include/hal/i2s_ll.h's i2s_ll_tx_clk_set_src()/
+      // i2s_ll_rx_clk_set_src() both hardcode tx_clk_sel/rx_clk_sel to 2
+      // (D2CLK) and IGNORE their `src` parameter entirely, with the comment
+      // "ESP32-S3 only support I2S_CLK_D2CLK". soc_caps.h for esp32s3 also
+      // does not define SOC_I2S_SUPPORTS_APLL (present on the original
+      // ESP32, absent here) -- APLL is a chip-level capability this SoC's
+      // I2S peripheral does not have wired to it in this framework. The
+      // legacy driver's i2s_config_t.use_apll field exists only because the
+      // struct is shared across chips; toggling it on THIS chip/framework
+      // has no effect on the actual clock source -- an APLL-vs-D2CLK A/B
+      // diagnostic would be a no-op, not a real test, so none is
+      // implemented. This closes the APLL hypothesis for the residual
+      // speaker buzz with source-level evidence, not a physical test.
       .use_apll = false,
       // TX side auto-fills silence on underflow (DIN must never carry
       // garbage); this flag is TX-specific and does not affect RX.

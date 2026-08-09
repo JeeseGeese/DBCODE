@@ -26,11 +26,15 @@ its section in `README.md`.
   devkit, USB-C bridged to UART0 via an onboard WCH CH343 chip (not the
   ESP32-S3's native USB-OTG peripheral — this is why `ARDUINO_USB_MODE=0`
   is set in `platformio.ini`).
-- **LEDs:** 58x WS2812B-compatible addressable LEDs (`NUM_LEDS=58`),
-  single data line, GPIO4. A physically-connected 42-LED assembly (3
-  daisy-chained rows) has been observed working correctly under the
-  existing 58-pixel configuration — see README "42-LED assembly" section
-  before changing `NUM_LEDS`.
+- **LEDs:** 36x WS2812B-compatible addressable LEDs (`NUM_LEDS=36`),
+  single data line, GPIO4. Corrected 2026-08-08 (Sunny V1.1 LED-count
+  audit) — this section previously said 58 (`NUM_LEDS=58`) with a
+  separately-documented, never-independently-confirmed "42-LED assembly"
+  theory layered on top; both are superseded by a direct physical count
+  of 36. See `docs/current/HARDWARE_ARCHITECTURE.md` and
+  `docs/lessons/verify-physical-led-count.md`. `docs/V1/` retains the
+  frozen 58-LED snapshot as historically accurate for that tag — do not
+  edit it to match this correction.
 - **Buttons:** 4x momentary pushbuttons, `INPUT_PULLUP`, no external
   resistors.
 - **Microphone:** 1x INMP441 I2S MEMS microphone.
@@ -445,11 +449,16 @@ A few commands worth knowing before touching anything:
   `docs/DRV8833_MOTOR_BRINGUP.md` section 8). The actual confirmed root
   cause of the original startup failure was mechanical belt preload
   (section 20 of the same doc), not electrical.
-- **`NUM_LEDS=58` is deliberately larger than the physically-confirmed
-  42-LED assembly currently connected.** This is safe (surplus WS2812
-  data simply has no LED left to land on) and intentional — do not
-  "fix" it down to 42 without re-reading the README's "42-LED assembly"
-  section first.
+- **`NUM_LEDS` was corrected from 58 to 36 on 2026-08-08** (Sunny V1.1
+  LED-count audit) after a direct physical count — the "42-LED assembly
+  vs. 58" framing that used to live here was itself never independently
+  verified, and is now superseded, not confirmed. Every render loop,
+  buffer, and the power estimator (`applyPowerLimit()` in `main.cpp`)
+  already read `NUM_LEDS` symbolically rather than a hardcoded literal,
+  so this one constant change was sufficient — see
+  `docs/lessons/verify-physical-led-count.md` for the full lesson and
+  `docs/current/POWER.md` for why this correction is explicitly NOT
+  evidence for or against the separately-open brownout investigation.
 - **The word "thinking" cannot be a serial command token** — it contains
   `k`, which the dispatcher intercepts unconditionally mid-word. This is
   why the enum value is `BehaviorState::THINKING` but the serial token is

@@ -1,5 +1,7 @@
 # DBCODE
 
+Currently being used as the repo for the development of Sunnys Firmware which involves the overall control and compatibility files to run the different components in Sunny
+
 Part of the **DOBETTERCODE** development workspace. `DOBETTERCODE` is the parent
 workspace directory for ongoing development work; `DBCODE` is the Git
 repository within it for general software, firmware, and embedded

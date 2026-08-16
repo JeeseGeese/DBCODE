@@ -189,10 +189,20 @@ boards remain electrically unconnected by design (see
 
 ## Restore Point
 
-_Populated after commit/tag/push:_
-
 - **Branch:** `feature/expressive-motion-v1`
-- **Commit:** _pending_
-- **Tag:** `sunny-v1.2-beta1` (pending)
+- **Commit:** `a4f25ba9cfb1e1d389a81fe4d5f14110b662fa6c`
+- **Tag:** `sunny-v1.2-beta1` (annotated, points exactly at the commit above)
 - **Date:** 2026-08-16
-- **Remote verification:** _pending_
+- **Remote verification:** pushed to `origin` (`https://github.com/JeeseGeese/DBCODE.git`); branch and tag both confirmed present and matching via `git ls-remote` after push.
+
+**To return to this checkpoint later:**
+
+```bash
+git show sunny-v1.2-beta1                          # inspect without changing branches
+git show sunny-v1.2-beta1:path/to/file              # view a specific file as of Beta 1
+git switch --detach sunny-v1.2-beta1                # explore/build this exact state
+git switch feature/expressive-motion-v1             # return to active development
+```
+
+`sunny-v1.2-beta1` is a permanent, immutable restore point — never move,
+retag, or force-update it.

@@ -38,9 +38,11 @@ Sunny V1.1  -- ESP32 refinement / reliability / speaker / power /
       understood, and not actively unsafe, which it is.
    |
    v
-Sunny V1.2  -- Touchscreen + UI programming
-   -- bring up the selected touchscreen/display hardware, local Sunny
-      UI architecture -- see "V1.2" below
+Sunny V1.2  -- Touchscreen + UI programming -- ACTIVE (Beta 1 checkpoint,
+                Phase V1.2.3 next)
+   -- ELEGOO ESP32-WROOM-32E touch display, separate project
+      (projects/sunny-display-esp32/); standalone bring-up and touch
+      calibration complete -- see "V1.2" below
    |
    v
 [GATE] Touchscreen UI stable
@@ -140,39 +142,61 @@ no permanent performance-crippling workaround was applied to hide the
 prototype power limitation — `MusicMotorController` remains fully
 operational). See "V1.1 exit criteria" in `docs/current/V1_1_STATUS.md`.
 
-## Sunny V1.2 — Touchscreen + UI programming
+## Sunny V1.2 — Touchscreen + UI programming — ACTIVE (Beta 1 checkpoint)
 
-Begins once V1.1 is physically validated and the checkpoint is
-committed/tagged. Goals:
+**Status as of 2026-08-16: ACTIVE. V1.2.1 (display/touch standalone
+bring-up) is COMPLETE (physically validated). V1.2.2 (touch calibration)
+is COMPLETE** — a real mapping bug (the original model produced
+~30-42px corner error; an inset target's raw reading was wrongly treated
+as measured at the true screen edge, and an earlier "enlarging the
+hitbox fixed it" conclusion was premature and has since been corrected)
+was fixed with a per-axis linear fit (<2px error on the measured
+dataset), and its physical retest has since confirmed the fix is
+spatially accurate. **This checkpoint is preserved as `sunny-v1.2-beta1`**
+— see
+[`../sunny-display-esp32/docs/V1_2_BETA1_STATUS.md`](../sunny-display-esp32/docs/V1_2_BETA1_STATUS.md)
+for the full record; V1.2.3 (Sunny UI foundation) is the next
+sub-phase, not yet started. Hardware is identified and
+confirmed (ELEGOO ESP32 2.8" Touch Display, ESP32-WROOM-32E, ILI9341,
+XPT2046 resistive touch — LCDWIKI model E32R28T) — **not** a
+Raspberry-Pi-attached peripheral; it's a **second, independent ESP32
+controller**. See
+[`../sunny-display-esp32/docs/DISPLAY_HARDWARE.md`](../sunny-display-esp32/docs/DISPLAY_HARDWARE.md)
+for the full hardware identity, pin map, driver stack, and bring-up
+status, and that same doc's "V1.2 internal roadmap" section for the
+V1.2.1–V1.2.8 sub-phase breakdown this milestone follows.
 
-- Bring up the selected touchscreen/display hardware (hardware not yet
-  chosen as of this roadmap revision — do the display-requirements
-  inspection before committing to a UI framework).
-- Choose/finalize a UI framework once the actual display
-  hardware/interface (SPI/parallel/resolution/touch controller) is
-  known — LVGL is a plausible default for this class of embedded
-  display but is **not locked in** without inspecting the real
-  requirements first.
-- Create Sunny's local UI architecture: how the UI layer reads from
-  and (where appropriate) commands existing subsystems without
-  becoming a second owner of any GPIO/peripheral (see
-  `AGENTS.md`'s single-owner-resource convention — the UI should
-  consume status, not bypass existing owners).
-- Diagnostics/status screens: speaker/mic/motor/LED status visible on
-  the touchscreen, reusing existing status-query surfaces
-  (`printSpeakerTestStatus()`, `printSpeakerVolStatus()`, motor/LED
-  status equivalents) rather than duplicating state.
-- Controls/settings screens: volume, brightness, mode selection, etc.
-  — through the same command paths the serial dispatcher already uses
-  where possible, not a parallel control mechanism.
-- Animations/personality display on-screen, coordinated with (not
-  competing against) the existing LED/motor personality behaviors.
-- A clean, explicit interface between the UI layer and existing Sunny
-  subsystems — read-only status queries and explicit command
-  functions, never direct internal-state manipulation.
+Goals (unchanged from the original framing, now being executed):
+
+- Bring up the display/touch hardware standalone — **V1.2.1 physically
+  validated 2026-08-08**: renders correctly right-side-up in landscape
+  at `rotation=3` (`rotation=1` was tried first and found upside down on
+  real hardware), touch initializes and maps correctly. See the
+  UI-controller project's own docs. **Touch calibration (V1.2.2)
+  physically validated** — the corrected per-axis linear-fit model
+  (fixed 2026-08-09 after a real corner-mapping bug) is applied in
+  `TouchManager.cpp`; the board boots into a touch-validation screen,
+  and its spatial accuracy across all 5 targets + TAP TEST has been
+  physically confirmed.
+- UI framework: **LovyanGFX + LVGL 9.5.0**, selected after inspecting
+  the actual confirmed hardware (not assumed in advance) — see
+  `DISPLAY_HARDWARE.md`'s "Driver stack selection" section for the
+  evaluated alternatives and why.
+- Sunny's local UI architecture: DISPLAY HARDWARE / TOUCH HARDWARE /
+  UI STATE / UI SCREENS / COMMUNICATION separation, established in the
+  new project — see its `docs/DISPLAY_HARDWARE.md`'s "Software
+  architecture" section. The UI layer will consume status, not bypass
+  existing owners, once V1.2.4 (body↔display communication) begins —
+  not implemented yet.
+- Diagnostics/status screens, controls/settings screens, animations —
+  all still design-only (V1.2.5–V1.2.7), not yet implemented.
+- The body controller (`sunflower-esp32-s3`) is **untouched** by V1.2
+  work so far and remains at its validated `sunny-v1.1` state — the two
+  projects are electrically unconnected (standalone-first bring-up;
+  see `DISPLAY_HARDWARE.md`'s safety rule).
 
 See `docs/CLAUDE_CONTEXT_GUIDE.md`'s "Touchscreen/UI work (V1.2)"
-section for the minimal context set for this milestone once it starts.
+section for the minimal context set for continuing this milestone.
 
 ## Sunny V1.3 — Raspberry Pi integration
 

@@ -13,6 +13,11 @@ resistive touch, LCDWIKI model E32R28T). No PSRAM, 4MB flash.
 
 ## Status
 
+**Sunny V1.2 Beta 1 checkpoint** — see
+[`docs/V1_2_BETA1_STATUS.md`](docs/V1_2_BETA1_STATUS.md) for the full
+checkpoint record (both controllers, test/build results, physical
+validation evidence, and known limitations). Beta 1, not V1.2 final.
+
 **V1.2.1 (display/touch standalone bring-up) — PHYSICALLY VALIDATED**
 (2026-08-08): display initializes, renders correctly, right-side-up in
 landscape at `rotation=3` (rotation=1 was tried first and found upside
@@ -20,18 +25,20 @@ down), colors/text correct, touch initializes and TAP TEST responds
 correctly. See `docs/DISPLAY_HARDWARE.md`'s "First bring-up target"
 table for the full itemized record.
 
-**V1.2.2 (touch calibration) — mapping bug found and fixed
-(2026-08-09), physical retest pending.** Physical validation found the
-original calibration model had a real ~30-42px corner mapping error
-(it treated an inset target's raw reading as if measured at the true
-screen edge — the center stayed accidentally accurate, which is why
-this wasn't obvious at first). An earlier "enlarging the hitbox fixed
-it" conclusion in this project's docs was premature and has been
-corrected. The fix: a per-axis linear (scale+offset) fit against the
-measured targets' actual screen positions, chosen after comparing three
-models on the real dataset — see `docs/DISPLAY_HARDWARE.md`'s "Touch
-calibration procedure" section for the full bug/fix record and model
-comparison. `test_host/final_touch_calibration.cpp` locks in both the
+**V1.2.2 (touch calibration) — COMPLETE, physically validated.**
+Physical validation found the original calibration model had a real
+~30-42px corner mapping error (it treated an inset target's raw
+reading as if measured at the true screen edge — the center stayed
+accidentally accurate, which is why this wasn't obvious at first). An
+earlier "enlarging the hitbox fixed it" conclusion in this project's
+docs was premature and has been corrected. The fix: a per-axis linear
+(scale+offset) fit against the measured targets' actual screen
+positions, chosen after comparing three models on the real dataset —
+see `docs/DISPLAY_HARDWARE.md`'s "Touch calibration procedure" section
+for the full bug/fix record and model comparison. The corrected
+model's spatial accuracy across all 5 targets + TAP TEST has since been
+physically retested and confirmed.
+`test_host/final_touch_calibration.cpp` locks in both the
 new model's accuracy and the old model's failure as a permanent
 regression guard. Minimal screen-navigation
 infrastructure (`HOME`/`AUDIO`/`MOTION`/`LEDS`/`DIAGNOSTICS`/`SETTINGS`

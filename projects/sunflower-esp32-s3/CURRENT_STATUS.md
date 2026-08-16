@@ -5,15 +5,16 @@ history dump. For detail, follow the links below. If you're reading
 this long after its last edit, verify anything load-bearing against
 `git log`/`git status` first.
 
-**Last updated:** 2026-08-08 — **Sunny V1.1: COMPLETE.** Physical
-validation passed on battery power (see `docs/current/V1_1_STATUS.md`
-for the full closure status, exit-criteria table, and what's explicitly
-NOT claimed — residual speaker buzz and the brownout electrical root
-cause remain open, accepted limitations, not blockers). Host tests
-(20/20 passing) and a clean build are done. `ROADMAP.md` has V1.2
-retargeted to **touchscreen/UI** (Raspberry Pi moved to V1.3, camera to
-V1.4). `docs/V1/` stays frozen exactly as tagged at `sunny-v1-baseline`
-(2026-08-07) and was not touched by any V1.1 work.
+**Last updated:** 2026-08-16 — **Sunny V1.1: COMPLETE** (physically
+validated on battery power, checkpointed, tagged `sunny-v1.1`, pushed —
+see `docs/current/V1_1_STATUS.md`). **Sunny V1.2 (touchscreen/UI) is
+ACTIVE** in a separate project — V1.2.1 and V1.2.2 both complete and
+physically validated (V1.2.2's corner-mapping bug fix, a fitted linear
+model with <2px error on the measured dataset, has now been physically
+retested and confirmed accurate). **Sunny V1.2 Beta 1** (`sunny-v1.2-beta1`)
+checkpoints this state — see "What comes next" below.
+`docs/V1/` stays frozen exactly as tagged at `sunny-v1-baseline`
+(2026-08-07) and remains untouched.
 
 Previous entries (2026-08-08, earlier the same day): power/brownout
 investigation documented in full (`docs/current/POWER.md`) — 36-LED
@@ -114,11 +115,29 @@ either, see [`docs/development/`](docs/development/).
 ## What comes next
 
 See [`ROADMAP.md`](ROADMAP.md) for the full milestone/decision-gate
-plan (V1.1 **complete** → **V1.2 touchscreen/UI** → V1.3 Raspberry Pi →
-V1.4 camera → V1.5 LLM/voice → V2.0 production). Raspberry Pi is no
-longer V1.2 — touchscreen/UI comes first. V1.2 has not started yet:
-next step is selecting the touchscreen/display hardware — see
-`ROADMAP.md`'s V1.2 section for the goals.
+plan (V1.1 **complete** → **V1.2 touchscreen/UI (active)** → V1.3
+Raspberry Pi → V1.4 camera → V1.5 LLM/voice → V2.0 production).
+
+**V1.2 is now active** in a separate PlatformIO project,
+[`../sunny-display-esp32/`](../sunny-display-esp32/) — a second,
+independent ESP32 controller (ELEGOO ESP32-WROOM-32E touch display, not
+this project's ESP32-S3). See that project's
+[`docs/DISPLAY_HARDWARE.md`](../sunny-display-esp32/docs/DISPLAY_HARDWARE.md)
+for the two-controller architecture, hardware identity, and bring-up
+status. **V1.2.1 (display/touch standalone bring-up) is COMPLETE**
+(physically validated 2026-08-08). **V1.2.2 (touch calibration) is now
+COMPLETE** — a real mapping bug (2026-08-09) treated an inset
+calibration target's raw reading as if measured at the true screen
+edge, producing ~30-42px corner error (masked at first by a
+coincidentally-accurate center and an enlarged hitbox that made corners
+*activate* without actually being *accurate*). Replaced with a per-axis
+linear fit against the measured targets' true screen positions (<2px
+error on the dataset), and the spatial accuracy of the fix has since
+been physically retested and confirmed. This project (`sunflower-esp32-s3`,
+the Sunny body controller) remains untouched by V1.2 work and stays at
+its validated `sunny-v1.1` state. See
+[`../sunny-display-esp32/docs/V1_2_BETA1_STATUS.md`](../sunny-display-esp32/docs/V1_2_BETA1_STATUS.md)
+for the full **Sunny V1.2 Beta 1** checkpoint record.
 
 ## Canonical docs
 

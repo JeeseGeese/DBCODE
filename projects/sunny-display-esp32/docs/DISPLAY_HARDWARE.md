@@ -16,7 +16,7 @@ Sunny V1.2 uses **two independent ESP32 controllers**, not one:
 | Chip | ESP32-S3 (N16R8) | ESP32-WROOM-32E |
 | Project | `projects/sunflower-esp32-s3/` | `projects/sunny-display-esp32/` |
 | Owns | 36 WS2812 LEDs, LED effects, AudioOverlay, INMP441 mic, MAX98357A speaker, shared I2S, DRV8833 motor, MusicMotor, physical buttons, personality/behavior coordination | ILI9341 LCD, XPT2046 touch, LVGL, UI rendering/navigation/state, Sunny face/personality *display* |
-| Status | Validated at `sunny-v1.1` | V1.2.1 **COMPLETE** (physically validated); V1.2.2 touch calibration **mapping bug found and fixed** (2026-08-09) — a real ~30-42px corner mapping error was found and replaced with a fitted linear model (<2px error on the measured dataset); physical retest pending before V1.2.2 is marked complete — see "Touch calibration procedure" below |
+| Status | Validated at `sunny-v1.1` | V1.2.1 **COMPLETE** (physically validated); V1.2.2 touch calibration **COMPLETE** — a real ~30-42px corner mapping error (2026-08-09) was fixed with a per-axis linear model (<2px error on the measured dataset), and its spatial accuracy has since been physically retested and confirmed — see "Touch calibration procedure" below. Checkpointed as **Sunny V1.2 Beta 1** (`sunny-v1.2-beta1`) — see `V1_2_BETA1_STATUS.md` |
 
 These are **separately buildable, separately uploadable PlatformIO
 projects**. Nothing in this project modifies the body controller's
@@ -333,7 +333,7 @@ runs standalone on its own USB-C).
 | LVGL genuinely rendering | ✅ **Physically confirmed** |
 | No tearing/corruption | ✅ **Physically confirmed** (partial-buffer flush via `startWrite()`/`setAddrWindow()`/`writePixels()`/`endWrite()`) |
 | Touch initializes | ✅ **Physically confirmed** — XPT2046 responds |
-| Touch coordinates map correctly | ⚠️ **Fitted-model fix applied 2026-08-09, physical retest pending.** The original raw-min/max calibration model had a real, confirmed bug (systematic ~30-42px corner error) — see "Touch calibration procedure" and "Mapping-model bug and fix" below for the full record, including a correction to an earlier premature "resolved" conclusion in this document. Replaced with a per-axis linear fit (host-test-verified <2px error on the measured dataset); awaiting the user's physical confirmation before this row is marked physically confirmed. |
+| Touch coordinates map correctly | ✅ **Physically confirmed.** The original raw-min/max calibration model had a real, confirmed bug (systematic ~30-42px corner error, fixed 2026-08-09) — see "Touch calibration procedure" and "Mapping-model bug and fix" below for the full record, including a correction to an earlier premature "resolved" conclusion in this document. Replaced with a per-axis linear fit (host-test-verified <2px error on the measured dataset); its spatial accuracy across all 5 targets + TAP TEST has since been physically retested and confirmed. |
 | TAP TEST button reacts + serial log | ✅ **Physically confirmed** — button visually reacts, count increments, touch position corresponds correctly to the visible button |
 
 ## Touch calibration procedure (V1.2.2 — mapping bug found and fixed, 2026-08-09)
@@ -591,9 +591,9 @@ these now):
 
 ```
 V1.2.1  Display hardware identification + standalone firmware bring-up   <- COMPLETE, physically validated 2026-08-08
-V1.2.2  LVGL + resistive-touch validation/calibration                    <- mapping bug fixed 2026-08-09
-                                                                              (fitted linear model); physical
-                                                                              retest pending
+V1.2.2  LVGL + resistive-touch validation/calibration                    <- COMPLETE, physically validated
+                                                                              (fitted linear model, fixed 2026-08-09)
+        BETA 1 CHECKPOINT (sunny-v1.2-beta1) cut here -- see V1_2_BETA1_STATUS.md
 V1.2.3  Sunny UI foundation
 V1.2.4  ESP32-S3 <-> Display ESP32 communication
 V1.2.5  Live Sunny status screens

@@ -100,20 +100,31 @@ looking causes (58-LED count, the 1000µF capacitor) were already
 investigated and explicitly ruled out or confounded; don't re-propose
 them without reading why first.
 
-## Touchscreen/UI work (V1.2 — current next milestone)
+## Touchscreen/UI work (V1.2 — ACTIVE)
 
-**Read:** `CURRENT_STATUS.md`, `ROADMAP.md`'s "Sunny V1.2" section (goals
-and scope), `docs/current/V1_1_STATUS.md` (confirms V1.1 is closed/what
-was accepted as a limitation going in), `docs/current/GPIO_MAP.md`
-(which pins are already owned — the UI's display/touch controller needs
-GPIOs not already in that table), `docs/current/SOFTWARE_ARCHITECTURE.md`
-(the existing single-owner-resource pattern the UI layer must follow —
-read-only status queries + explicit command paths into existing
-subsystems, never a second owner of any peripheral), and whatever
-touchscreen/display hardware documentation exists once the hardware is
-chosen. For status/diagnostics screens, read only the specific status-
-query functions being surfaced (e.g. `printSpeakerTestStatus()`,
-`printSpeakerVolStatus()`) — not the full implementation behind them.
+**This is now a separate PlatformIO project:**
+`projects/sunny-display-esp32/` (a second, independent ESP32-WROOM-32E
+controller — NOT part of this ESP32-S3 body-controller project). For
+work on the UI controller itself, the minimal context is almost
+entirely **within that project**, not this one:
+
+**Read (UI controller work):** `sunny-display-esp32/README.md`,
+`sunny-display-esp32/docs/DISPLAY_HARDWARE.md` (hardware identity, pin
+map, driver stack, LVGL config, architecture, bring-up status — this is
+the one file that answers almost everything), then only the specific
+source files for the change being made (e.g. `TouchManager.cpp` for a
+calibration change, `Screens.cpp` for a new screen).
+
+**Read (from this project, only if the change touches the body↔display
+boundary or reuses body-controller status):** `CURRENT_STATUS.md`,
+`ROADMAP.md`'s "Sunny V1.2" section, `docs/current/GPIO_MAP.md` (this
+project's own pins — irrelevant to the display board's pins, which live
+in the other project's `Config.h`), `docs/current/SOFTWARE_ARCHITECTURE.md`
+(the single-owner-resource pattern the UI layer must follow when it
+eventually reads this project's status). For status/diagnostics screens
+later, read only the specific status-query functions being surfaced
+(e.g. `printSpeakerTestStatus()`) — not the full implementation behind
+them.
 
 **Do NOT read:** the V1.1 power/brownout debugging history
 (`docs/current/POWER.md`'s investigation sections — a link from

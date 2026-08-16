@@ -58,132 +58,139 @@ deleting the field — a missing field reads as "forgotten," not
 
 ## Current entry
 
-**Session date:** 2026-08-08 (final V1.1 validation/checkpoint-prep
-pass — the fourth and last V1.1 session today; see
-`docs/current/V1_1_STATUS.md` for the full accomplishment list across
-all four)
+**Session date:** 2026-08-16 — Sunny V1.2 Beta 1 checkpoint session.
+Verified, documented, and preserved the current working state of both
+Sunny ESP32 projects (body + display) as a formal restore point before
+UI development continues. Not a feature-development session.
 
-**Current objective (this pass, updated):** Physical validation was
-run by the user on battery power and **approved** — see
-`docs/current/V1_1_STATUS.md`'s "Physical validation result" section
-for exactly what was confirmed (boot/buttons/LEDs/overlay/mic/motor/
-speaker/combined-system, no brownout). **Sunny V1.1 is now COMPLETE.**
-Status docs (`V1_1_STATUS.md`, `CURRENT_STATUS.md`, `OVERVIEW.md`,
-`ROADMAP.md`) have been updated accordingly.
+**Current objective (this entry):** VERIFY → DOCUMENT → PRESERVE →
+COMMIT → TAG → PUSH the current state as `sunny-v1.2-beta1`. No
+refactoring, recalibration, or behavior changes made to either
+project's firmware.
 
-**Checkpoint commit/tag/push status: IN PROGRESS, not finished as of
-this entry.** Before staging, a working-tree audit found
-`platformio.ini` modified **outside any V1.1 session** — it now
-includes `lvgl/lvgl@^9.5.0` in `lib_deps` (a V1.2 touchscreen-UI
-library) and has had its explanatory comments stripped/reformatted
-(consistent with a PlatformIO IDE auto-format, not a manual edit by any
-AI session this project has record of). This is flagged as an
-ambiguous/out-of-scope file for the V1.1 commit and excluded pending
-the user's decision — **do not assume it's been resolved one way or
-the other; check `git status`/`git diff platformio.ini` and this file's
-own latest state before continuing the checkpoint.**
+**What happened:**
 
-**Working tree audit this pass:** all uncommitted changes classified —
-speaker/audio refinement, 36-LED correction, HWTEST power-safety fix,
-power/brownout documentation, tests, and context/handoff/roadmap docs.
-**No ambiguous or unrelated changes found** — the one untracked file
-outside this classification (`.gitignore`) predates all four sessions
-and is an ordinary `.pio`/`.vscode` ignore file, not V1.1 work.
+1. Re-verified (not assumed) both projects' current state: body
+   controller source is byte-identical to the `sunny-v1.1` tag; display
+   controller source matches exactly what was last built/uploaded in
+   the 2026-08-09 session (confirmed via matching RAM/Flash figures on
+   a fresh build).
+2. Confirmed with the user that the touch-validation screen's physical
+   retest (5 targets + TAP TEST, exercising the corrected per-axis
+   linear-fit calibration) — left pending at the end of the 2026-08-09
+   session — has since been performed and **passed**. V1.2.2 is now
+   COMPLETE.
+3. Ran the full host-test suite and a clean build for both projects
+   fresh this session (see "Tests/build performed" below).
+4. Wrote `projects/sunny-display-esp32/docs/V1_2_BETA1_STATUS.md`, the
+   canonical Beta 1 checkpoint record (purpose, both controllers'
+   status, physically-verified evidence, software-verified evidence,
+   current beta capabilities, known limitations).
+5. Updated living docs (`CURRENT_STATUS.md`, `ROADMAP.md` in
+   `sunflower-esp32-s3`; `README.md`, `docs/DISPLAY_HARDWARE.md` in
+   `sunny-display-esp32`) to replace stale "physical retest pending"
+   language with the confirmed-complete status, and to point at the
+   new Beta 1 status doc. `docs/V1/` was not touched.
+6. Committed the checkpoint, tagged `sunny-v1.2-beta1`, and pushed both
+   the branch and tag — see the checkpoint commit for the exact scope.
 
-**Roadmap re-sequenced this pass:** V1.2 is now **touchscreen/UI**
-(previously undefined at this slot); Raspberry Pi moved to V1.3; camera
-to V1.4; LLM/voice to V1.5. See `ROADMAP.md`. `docs/CLAUDE_CONTEXT_GUIDE.md`
-gained a "Touchscreen/UI work (V1.2)" minimal-read-set section so the
-next session doesn't need to load V1.1's debugging history to start UI
-work.
+**Full technical record of the V1.2.2 bug/fix (mapping-model error,
+comparison of three calibration models, applied constants, the
+premature "hitbox fixed it" conclusion and its correction) lives in
+`sunny-display-esp32/docs/DISPLAY_HARDWARE.md`'s "Touch calibration
+procedure" section — not duplicated here.**
 
-**Current branch:** `feature/expressive-motion-v1` (unchanged).
+**Tests/build performed this session (fresh, not assumed):**
+- Body controller (`sunflower-esp32-s3`): 20/20 host tests pass, 0
+  warnings. Clean build SUCCESS — RAM 7.0% (23048/327680), Flash 7.0%
+  (456357/6553600), 0 project-source warnings. Source unchanged from
+  `sunny-v1.1` — no upload performed (unnecessary).
+- Display controller (`sunny-display-esp32`): 4/4 host test files pass
+  (26 checks), 0 warnings. Clean build SUCCESS — RAM 34.0%
+  (111452/327680), Flash 51.0% (668557/1310720), 0 warnings. No new
+  upload performed — the already-flashed firmware (source-identical) is
+  what the user physically retested.
 
-**Working tree status:** NOT committed — accumulated uncommitted
-changes across all four of today's V1.1 sessions (speaker sprint + LED
-correction + power/brownout documentation + this validation pass). Run
-`git status`/`git diff` before assuming what's in the tree.
-**Do not commit/tag/push without the user's explicit approval of the
-physical validation results** — that gate has not been passed yet as
-of this entry.
+**Hardware testing performed this session:** none directly (no new
+upload) — this was a verification/documentation/checkpoint session. The
+physical retest referenced above was performed by the user; see item 2.
 
-**Tests/build performed this pass:**
-- Full host suite: **20/20 `test_host/*.cpp` files present, compiled,
-  and passing, 0 warnings** (verified fresh this pass, not assumed from
-  an earlier session).
-- Clean build (`pio run -t clean && pio run`): **SUCCESS**, 0
-  project-source warnings (only the pre-existing, documented
-  `ARDUINO_USB_MODE redefined` framework notices), RAM 7.0%
-  (23048/327680 bytes), Flash 7.0% (456341/6553600 bytes).
-- No upload was performed this pass (no source changed, nothing new to
-  flash) — the currently-flashed firmware is from the LED-count
-  session earlier today.
+**Outstanding issues (unchanged, carried forward as Beta 1 known
+limitations — full list in `V1_2_BETA1_STATUS.md`):**
+- Body↔display communication transport is unresolved — the display
+  board's near-total lack of free GPIOs (effectively one bidirectional
+  pin) is a real constraint, not yet designed around.
+- The six placeholder screens (HOME/AUDIO/MOTION/LEDS/DIAGNOSTICS/
+  SETTINGS) have no real content — enum values and dispatcher routing
+  only.
+- Flash partition scheme on the display project (`esp32dev` defaults)
+  hasn't been reconsidered against the confirmed 4MB flash.
+- Body-controller brownout root cause remains a strong hypothesis
+  (computer-USB vs. battery power), not formally isolated. Residual
+  speaker buzz remains unresolved. Neither is a Beta 1 blocker — both
+  are pre-existing, documented `sunny-v1.1` limitations.
 
-**Hardware testing performed this pass: none** — this was a
-verification/documentation pass, not a physical-hardware session. See
-`docs/current/V1_1_STATUS.md`'s exit-criteria table for exactly which
-items are already physically verified (from earlier sessions) vs.
-still need the checklist run.
-
-**Outstanding issues:**
-
-- The V1.1 physical validation checklist has not been run yet — this
-  is the actual remaining gate, not a code or documentation gap.
-- Residual speaker buzz/static remains unresolved and unproven (accepted
-  V1.1 limitation, not a blocker — see `docs/current/V1_1_STATUS.md`).
-- Electrical brownout root cause remains not formally closed (accepted
-  V1.1 limitation, not a blocker — same doc).
-
-**Recommended next task:** Run the physical validation checklist
-(`docs/current/TESTING.md`) on battery power and report results back,
-per-step, not as a single pass/fail. On approval: V1.1 checkpoint
-commit/tag/push, then V1.2 touchscreen/UI work can begin (hardware
-selection first — see `ROADMAP.md`'s V1.2 section).
+**Recommended next task:** V1.2.3 — Sunny UI foundation. See
+`sunny-display-esp32/docs/DISPLAY_HARDWARE.md`'s "Later Sunny UI
+architecture" section for the planned screen list and the
+navigation-infrastructure-only groundwork already in place
+(`isScreenImplemented()`).
 
 **Commands to resume:**
 
 ```bash
 cd ~/DOBETTERCODE/DBCODE
-git status                     # working tree has accumulated uncommitted changes
+git status                     # should be clean after this session's checkpoint
+git log --oneline --decorate -5
+git tag --list                 # sunny-v1.2-beta1 should be present
+
 cd projects/sunflower-esp32-s3
 export PATH="$HOME/.platformio/penv/bin:$PATH"
-pio run                        # confirm it still builds
+pio run                        # body controller
 cd test_host && for f in *.cpp; do n="${f%.cpp}"; g++ -std=c++17 -Wall -Wextra -o "/tmp/$n" "$f" && "/tmp/$n"; done
-pio device list                # confirm port before any upload -- don't assume it's still whatever it was last session
+
+cd ../../sunny-display-esp32
+pio run                        # display controller
+cd test_host && for f in *.cpp; do n="${f%.cpp}"; g++ -std=c++17 -Wall -Wextra -o "/tmp/$n" "$f" && "/tmp/$n"; done
+
+pio device list                # confirm port before any upload -- both boards may be connected simultaneously
 ```
 
 **Known risks:**
 
-- The motor (DRV8833), LED strip, and MAX98357A amplifier share one 5V
-  rail; only the INMP441 microphone runs from 3.3V. The new, louder
-  default speaker volume (70% vs. the old 5% bring-up default) draws
-  meaningfully more amplifier current than before.
-- No current-sensing or thermal-monitoring hardware exists on this
-  project.
-- `speaker isolate on` commands the motor stopped once but does not
-  prevent an independently-active motor behavior from re-engaging it —
-  not a safety interlock.
-- The prototype is still solderless breadboard/Dupont wiring — see
-  `docs/lessons/breadboard-prototype-transient-load-risk.md`.
+- Uploading to the wrong board is a real risk when both ESP32s are
+  connected simultaneously — always confirm the exact port/VID:PID
+  before any upload (body controller: WCH CH343, `1A86:55D3`; display
+  controller: WCH CH340, `1A86:7523`).
+- The display board's near-total lack of free GPIOs means almost any
+  future peripheral/feature decision on it needs to check
+  `DISPLAY_HARDWARE.md`'s GPIO audit first.
 
 **Anything the next AI absolutely must know:**
 
-1. This repository (and the sunflower project specifically) is **not
-   complete** — V1.1 is "ready for validation," not "complete," until
-   the user runs the physical checklist and approves. Do not write or
-   imply V1.1 is done before that happens.
-2. **Do not commit, tag, or push** until the user explicitly approves
-   the physical validation results — this is an explicit gate from the
-   user's own instructions this session, not a general caution.
-3. Read `/AGENTS.md` section 6 (physical validation policy) and
-   `docs/current/V1_1_STATUS.md`'s exit-criteria table before writing
-   any status claim about V1.1 — it already distinguishes
-   verified/physically-observed/accepted-limitation per criterion;
-   don't collapse that back into a single "done" claim.
-4. V1.2 is now **touchscreen/UI**, not Raspberry Pi — if a future
-   session's instructions still say "V1.2 = Raspberry Pi," the roadmap
-   has since been corrected; trust `ROADMAP.md`/`CURRENT_STATUS.md`
-   over a stale instruction.
-5. Nothing was committed, pushed, or tagged today (any of the four
-   sessions). The working tree has real uncommitted changes as of this
-   entry.
+1. Sunny V1.2 is a **two-controller architecture** — the display has its
+   own ESP32; the body ESP32-S3 will never drive it directly.
+2. `sunny-display-esp32/docs/DISPLAY_HARDWARE.md` is the one file that
+   answers almost every hardware/architecture question about the UI
+   controller. `sunny-display-esp32/docs/V1_2_BETA1_STATUS.md` is the
+   checkpoint record.
+3. **Software-clean is not the same as physically-correct** — this
+   project hit that repeatedly during V1.2.2 (rotation=1's silent
+   upside-down render, a coordinate-mapping bug that got misdiagnosed
+   as a hitbox-size issue because "it activates now" was mistaken for
+   "it's accurate now"). Always get a human's physical confirmation
+   before calling anything visually/positionally validated.
+4. Touch calibration (`TouchManager.cpp`'s `CAL_SWAP_AXES`/`CAL_SCALE_X`/
+   `CAL_OFFSET_X`/`CAL_SCALE_Y`/`CAL_OFFSET_Y`) is a **fitted linear
+   model**, not a raw-min/max model — there is no more
+   `rawXMin`/`rawXMax`/`invertX`/`invertY` anywhere in this project;
+   don't reintroduce that shape.
+5. The calibration screen (`CalibrationManager.cpp`) is available via
+   `showScreen(SunnyUIScreen::CALIBRATION)` as a diagnostic/manual mode
+   for future recalibration — it never self-applies its output.
+6. The `lv_conf.h` widget-disable lesson (don't hand-disable individual
+   LVGL widgets without checking their internal dependency graph) is a
+   real, hard-won finding — don't reintroduce that bug when extending
+   the UI later.
+7. `sunny-v1.2-beta1` is Beta 1, not V1.2 final — V1.2.3 through V1.2.8
+   are not started. Treat it as a restore point, not a finish line.
